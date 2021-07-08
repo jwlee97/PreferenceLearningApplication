@@ -16,9 +16,10 @@ from skimage.color import rgb2lab
 
 
 class Adapt:
-    def __init__(self, dim, patchDim, occupancy):
+    def __init__(self, b64img, dim, panelDim, num_panels):
         self.imgDim = dim
         self.halfImgDim = dim / 2 
+        self.num_panels = num_panels
 
         # TODO: obtain mCan and mProj values from Hololens
         self.mCam = np.array(  [[0.99693,	0.05401,	0.05667,	0.00708],
@@ -26,88 +27,107 @@ class Adapt:
                                [0.03140,	0.38718,	-0.92147,	0.13505],
                                [0.00000,	0.00000,	0.00000,	1.00000]])
 
-        self.mProj = np.array([[1.52314,	0.00000,	0.01697,	0.00000 ],
+        self.mProj = np.array(  [[1.52314,	0.00000,	0.01697,	0.00000 ],
                                 [0.00000,	2.70702,	-0.05741,	0.00000 ],
                                 [0.00000,	0.00000,	-1.00000,	0.00000 ],
                                 [0.00000,	0.00000,	-1.00000,	0.00000]])
 
         self.wPos = np.array([0, 0, 0])
-        self.img = None
-        self.patchDim = self.wDim2uvDim(np.array(patchDim))
         self.depth = 0
         self.colorScheme = True
-        self.labelPosList = []
-        self.occupancy = occupancy
 
-
-    def place(self, b64img):
         imgData = base64.b64decode(b64img)
         img = Image.open(io.BytesIO(imgData))
         self.img = img
-        
-        uvAnchor = self.anchorCentre()
 
-        rDim = self.patchDim
-        rOffset = 0
-        cOffset = 0
-        rSteps = int(self.imgDim[0] / rDim[0])
-        cSteps = int(self.imgDim[1] / rDim[1])
-        patchM = np.empty([rSteps, cSteps])
-        patchE = np.empty([rSteps, cSteps])
-        patchLogProb  = np.empty([rSteps, cSteps])
-        
-        for iR in range(rSteps):
+        self.occupancy = {}
+        self.labelPosList = []
+        self.uvPlaceList = []
+        self.panelDim = []
+
+        for i in range(num_panels):
+            self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i])))
+    
+        for y in range(-100, self.imgDim[0]+500):
+            for x in range(-100, self.imgDim[1]+500):
+                self.occupancy[(y, x)] = 0
+
+
+    def place(self):
+        idxList = []
+        for i in range(self.num_panels):
+            uvAnchor = self.anchorCentre()
+            rDim = self.panelDim[i]
+            rOffset = 0
             cOffset = 0
-            for iC in range(cSteps):
+            rSteps = int(self.imgDim[0] / rDim[0])
+            cSteps = int(self.imgDim[1] / rDim[1])
+            panelM = np.empty([rSteps, cSteps])
+            panelE = np.empty([rSteps, cSteps])
+            panelLogProb  = np.empty([rSteps, cSteps])
+            
+            for iR in range(rSteps):
+                cOffset = 0
+                for iC in range(cSteps):
 
-                # crop image
-                crop_rect = (cOffset, rOffset, cOffset + rDim[1], rOffset + rDim[0])                
-                imgCrop = img.crop(crop_rect)
+                    # crop image
+                    crop_rect = (cOffset, rOffset, cOffset + rDim[1], rOffset + rDim[0])                
+                    imgCrop = self.img.crop(crop_rect)
 
-                # patch centre
-                patchPos = np.array([cOffset + rDim[1]/2, rOffset + rDim[0]/2])
-                posOffset = patchPos - uvAnchor
-                offsetNorm = np.array([abs(posOffset[0]/rDim[0]), abs(posOffset[1]/rDim[1])])
-                                                
-                M = self.colourfulness(imgCrop)                
-                #patchM[iR,iC] = M
-                
-                E = self.edgeness(imgCrop)
-                #patchE[iR,iC] = E
+                    # panel centre
+                    panelPos = np.array([cOffset + rDim[1]/2, rOffset + rDim[0]/2])
+                    posOffset = panelPos - uvAnchor
+                    offsetNorm = np.array([abs(posOffset[0]/rDim[0]), abs(posOffset[1]/rDim[1])])
+                                                    
+                    M = self.colourfulness(imgCrop)                
+                    #panelM[iR,iC] = M
+                    
+                    E = self.edgeness(imgCrop)
+                    #panelE[iR,iC] = E
 
-                if len(self.labelPosList) == 0:
-                    #anchor = (int(504/2), int(896/2))
-                    F = 0
-                else:
-                    sum_h, sum_w = 0
-                    for l in self.labelPosList:
-                        sum_h += l[0]
-                        sum_w += l[1]
-                    anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
-                    F = self.fittsLaw(anchor, patchPos, rDim)
+                    if len(self.labelPosList) == 0:
+                        F = 0
+                    else:
+                        sum_h = 0
+                        sum_w = 0
+                        for l in self.labelPosList:
+                            sum_h += l[0]
+                            sum_w += l[1]
+                        anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
+                        F = self.fittsLaw(anchor, panelPos, rDim)
 
-                if (self.check_occupancy(patchPos, rDim[1], rDim[0]) == 0):
-                    patchLogProb[iR,iC] = ( self.offsetLogProb(offsetNorm) +
+                    panelLogProb[iR,iC] = ( self.offsetLogProb(offsetNorm) +
                                             self.colourfulnessLogProb(M) +
-                                            self.edgenessLogProb(E)
-                                            -0.5*F )
-                
+                                            self.edgenessLogProb(E))
+                                            #-0.5*F )
+
                     # TEMP fig only
-                    patchE[iR,iC] = self.edgenessLogProb(E)
+                    panelE[iR,iC] = self.edgenessLogProb(E)
 
-                cOffset += rDim[1]
-                
-            rOffset += rDim[0]
+                    cOffset += rDim[1]
+                    
+                rOffset += rDim[0]
 
-        #print(np.array2string(patchLogProb, formatter={'float_kind':lambda patchLogProb: "%.2f" % patchLogProb}))
-        #print(np.array2string(patchF, formatter={'float_kind':lambda patchF: "%.2f" % patchF}))
-        idxMax = np.unravel_index(np.argmax(patchLogProb, axis=None), patchLogProb.shape)
-        uvMax = np.array([idxMax[1] * rDim[1] + rDim[1]/2, idxMax[0] * rDim[0] + rDim[0]/2])
-        labelPos = self.uv2w(uvMax)
-        labelPos = [labelPos[0], labelPos[1], 0.5] 
-        self.labelPosList.append(labelPos)
-        self.set_occupancy(patchPos, rDim[1], rDim[0])
-        return (labelPos, uvMax, self.occupancy)
+            #print(np.array2string(panelLogProb, formatter={'float_kind':lambda panelLogProb: "%.2f" % panelLogProb}))
+            #print(np.array2string(panelF, formatter={'float_kind':lambda panelF: "%.2f" % panelF}))
+            
+            sortIdx = np.argsort(-panelLogProb, axis=None)
+
+            for k in range(len(sortIdx)):
+                idx = sortIdx[k]
+                #sortIdx = np.argmax(panelLogProb, axis=None)
+                idxMax = np.unravel_index(idx, panelLogProb.shape)
+                uvMax = np.array([idxMax[1] * rDim[1] + rDim[1]/2, idxMax[0] * rDim[0] + rDim[0]/2])
+                labelPos = self.uv2w(uvMax)
+                if (self.check_occupancy(uvMax, rDim[1], rDim[0]) == 0):
+                    break
+
+            self.set_occupancy(uvMax, rDim[1], rDim[0])
+            labelPos = [labelPos[0], labelPos[1], 0.5]
+            self.labelPosList.append(labelPos)
+            self.uvPlaceList.append(uvMax)
+
+        return (self.labelPosList, self.uvPlaceList)
 
 
     # Checks if a given space is occupied (1 if occupied, 0 if else)
@@ -116,9 +136,6 @@ class Adapt:
         min_y = int(center[0]-panel_h/2)
         max_x = int(center[1]+panel_w/2)
         max_y = int(center[0]+panel_h/2)
-
-        if min_x < 0 or max_x > self.imgDim[1] or min_y < 0 or max_y > self.imgDim[0]:
-            return 1
         
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
@@ -138,20 +155,30 @@ class Adapt:
             for x in range(min_x, max_x):
                 self.occupancy[(y, x)] = 1
 
+
+    def color(self, uvPosList):
+        labelColors = []
+        textColors = []
+        for i in range(self.num_panels):
+            (label, text) = self._color(uvPosList[i], i)
+            labelColors.append(label)
+            textColors.append(text)
+
+        return (labelColors, textColors)
+
+    def _color(self, uvPos, i):
+        crop_rect = (   uvPos[0] - self.panelDim[i][1]/2,
+                        uvPos[1] - self.panelDim[i][0]/2, 
+                        uvPos[0] + self.panelDim[i][1]/2,
+                        uvPos[1] + self.panelDim[i][0]/2 )                
+        panelBG = self.img.crop(crop_rect)
         
-    def color(self, uvPos):
-        crop_rect = (   uvPos[0] - self.patchDim[1]/2,
-                        uvPos[1] - self.patchDim[0]/2, 
-                        uvPos[0] + self.patchDim[1]/2,
-                        uvPos[1] + self.patchDim[0]/2 )                
-        patchBG = self.img.crop(crop_rect)
-        
-        # DEV ONLY Show patch
-        #plt.imshow(patchBG, interpolation='nearest')
+        # DEV ONLY Show panel
+        #plt.imshow(panelBG, interpolation='nearest')
         #plt.show()
 
-        #medianColor = ImageStat.Stat(patchBG).median
-        dominantColor = self.dominantColor(patchBG)
+        #medianColor = ImageStat.Stat(panelBG).median
+        dominantColor = self.dominantColor(panelBG)
 
         # Retrieve color distribution given dominant color and select best
         pColorLogProbs = self.panelColorDistribution(dominantColor)        
@@ -224,18 +251,16 @@ class Adapt:
 
         return domColor
 
-    def colorHarmony(self, rgb_color, angle_size, num):
+    def colorHarmony(self, rgb_color, angle_size):
         ret = []
         hsv_color = colorsys.rgb_to_hsv(rgb_color[0], rgb_color[1], rgb_color[2])
         hsv_color = (hsv_color[0]*180, hsv_color[0]*255, hsv_color[0]*255)
-        print(hsv_color)
 
         start = hsv_color[0] - angle_size
         start_angle = random.uniform(start, hsv_color[0])
         end_angle = start_angle + angle_size
-        print(start_angle, end_angle)
         
-        for i in range(num):
+        for i in range(self.num_panels):
             angle = random.uniform(start_angle, end_angle)
             if angle < 0:
                 angle = 360 + angle
@@ -487,41 +512,34 @@ def test():
 
 
 def main():
-    img_dim = [504, 896]
-    occupancy = {}
-    
-    for y in range(img_dim[0]):
-        for x in range(img_dim[1]):
-            occupancy[(y, x)] = 0
-
-    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images"
-    img_file = "context_img_1623145003.png"
-    panel_file = "C:\\Users\\2020\\Documents\\Dissertation\\data.csv"
-    f = open("C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\context_img_buff_1623145003.log", "r")
+    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
+    f = open(directory + "context_img_buff_1623145003.log", "r")
     byte_arr = bytes(f.read(), 'utf-8')
-    
-    panel_info = parse_csv(panel_file)
-    out_filename = directory + '\\out.txt'
+    out_filename = directory + 'out.txt'
     print('Saving info to %s' % out_filename)
 
+    num_panels = 4
+    color_harmony_template = 93.6
+    img_dim = [504, 896]
+    panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
+
     with open(out_filename, "w") as f:
-        for i, p in enumerate(panel_info):
-            dim = [float(p['height']), float(p['width'])]
-            a = Adapt(np.array(img_dim), np.array(dim), occupancy)
-            (labelPos, uvPlace, occupancy) = a.place(byte_arr)
-            (labelColor, textColor) = a.color(uvPlace)
-            adaptPayload = a.msgString(labelPos, labelColor, textColor)
-            
-            dim_str = str(dim[0]) + ',' + str(dim[1])
-            pos_str = str(labelPos[0]) + ',' + str(labelPos[1]) + ',' + str(labelPos[2])
+        a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels)
+        
+        (labelPos, uvPlaces) = a.place()
+        (labelColors, textColors) = a.color(uvPlaces)
+   
+        for i in range(num_panels):
+            dim_str = str(panel_dim[i][0]) + ',' + str(panel_dim[i][1])
+            pos_str = str(labelPos[i][0]) + ',' + str(labelPos[i][1]) + ',' + str(labelPos[i][2])
             
             if (i == 0):
-                color = a.colorHarmony(labelColor, 93.6, len(panel_info))
-                color_str = str(labelColor[0]) + ',' + str(labelColor[1]) + ',' + str(labelColor[2])
+                color = a.colorHarmony(labelColors[i], color_harmony_template)
+                color_str = str(labelColors[i][0]) + ',' + str(labelColors[i][1]) + ',' + str(labelColors[i][2])
             else:
                 color_str = str(color[i][0]) + ',' + str(color[i][1]) + ',' + str(color[i][2])
 
-            text_color_str = str(textColor[0]) + ',' + str(textColor[1]) + ',' + str(textColor[2])
+            text_color_str = str(textColors[i][0]) + ',' + str(textColors[i][1]) + ',' + str(textColors[i][2])
 
             line =  dim_str + ';' + pos_str + ';' + color_str + ';' + text_color_str + '\n'
             print(line)

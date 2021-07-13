@@ -1,121 +1,64 @@
-import time
-import socket
+import zmq
+import json
+import adapt
+import numpy as np
 
-class UdpComms():
-    def __init__(self,udpIP,portTX,portRX,enableRX=False,suppressWarnings=True):
-        """
-        Constructor
-        :param udpIP: Must be string e.g. "127.0.0.1"
-        :param portTX: integer number e.g. 8000. Port to transmit from i.e From Python to other application
-        :param portRX: integer number e.g. 8001. Port to receive on i.e. From other application to Python
-        :param enableRX: When False you may only send from Python and not receive. If set to True a thread is created to enable receiving of data
-        :param suppressWarnings: Stop printing warnings if not connected to other application
-        """
+
+def get_panel_info(request):
+    info = []
+    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
+    f = open(directory + "context_img_buff_1623145003.log", "r")
+    byte_arr = bytes(f.read(), 'utf-8')
+
+    color_harmony_template = 93.6
+    img_dim = [504, 896]
+    panel_dim = []
+    num_panels = request["numPanels"]
+    occlusion = request["occlusion"]
+    constraints = request["constraints"]
+    colorfulness = request["colorfulness"]
+    edgeness = request["edgeness"]
+    fitts_law = request["fittsLaw"]
+
+    for c in constraints:
+        panel_dim.append((c["height"], c["width"]))
+
+    a = adapt.Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
         
-        self.udpIP = udpIP
-        self.udpSendPort = portTX
-        self.udpRcvPort = portRX
-        self.enableRX = enableRX
-        self.suppressWarnings = suppressWarnings # when true warnings are suppressed
-        self.isDataReceived = False
-        self.dataRX = None
+    (labelPos, uvPlaces) = a.weighted_optimization()
+    (labelColors, textColors) = a.color(uvPlaces)
+   
+    for i in range(num_panels):
+        dim_str = str(panel_dim[i][0]) + ',' + str(panel_dim[i][1])
+        pos_str = str(labelPos[i][0]) + ',' + str(labelPos[i][1]) + ',' + str(labelPos[i][2])
+            
+        if (i == 0):
+            color = a.colorHarmony(labelColors[i], color_harmony_template)
+            color_str = str(labelColors[i][0]) + ',' + str(labelColors[i][1]) + ',' + str(labelColors[i][2])
+        else:
+            color_str = str(color[i][0]) + ',' + str(color[i][1]) + ',' + str(color[i][2])
 
-        # Connect via UDP
-        self.udpSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # internet protocol, udp (DGRAM) socket
-        self.udpSock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # allows the address/port to be reused immediately instead of it being stuck in the TIME_WAIT state waiting for late packets to arrive.
-        self.udpSock.bind((udpIP, portRX))
+        text_color_str = str(textColors[i][0]) + ',' + str(textColors[i][1]) + ',' + str(textColors[i][2])
+        line =  dim_str + ';' + pos_str + ';' + color_str + ';' + text_color_str
+        info.append(line)
 
-        # Create Receiving thread if required
-        if enableRX:
-            import threading
-            self.rxThread = threading.Thread(target=self.ReadUdpThreadFunc, daemon=True)
-            self.rxThread.start()
-
-    def __del__(self):
-        self.CloseSocket()
-
-    def CloseSocket(self):
-        # Function to close socket
-        self.udpSock.close()
-
-    def SendData(self, strToSend):
-        # Use this function to send string to C#
-        self.udpSock.sendto(bytes(strToSend,'utf-8'), (self.udpIP, self.udpSendPort))
-
-    def ReceiveData(self):
-        """
-        Should not be called by user
-        Function BLOCKS until data is returned from C#. It then attempts to convert it to string and returns on successful conversion.
-        An warning/error is raised if:
-            - Warning: Not connected to C# application yet. Warning can be suppressed by setting suppressWarning=True in constructor
-            - Error: If data receiving procedure or conversion to string goes wrong
-            - Error: If user attempts to use this without enabling RX
-        :return: returns None on failure or the received string on success
-        """
-        if not self.enableRX: # if RX is not enabled, raise error
-            raise ValueError("Attempting to receive data without enabling this setting. Ensure this is enabled from the constructor")
-
-        data = None
-        try:
-            data, _ = self.udpSock.recvfrom(1024)
-            data = data.decode('utf-8')
-        except WindowsError as e:
-            if e.winerror == 10054: # An error occurs if you try to receive before connecting to other application
-                if not self.suppressWarnings:
-                    print("Are You connected to the other application? Connect to it!")
-                else:
-                    pass
-            else:
-                raise ValueError("Unexpected Error. Are you sure that the received data can be converted to a string")
-
-        return data
-
-    def ReadUdpThreadFunc(self): # Should be called from thread
-        """
-        This function should be called from a thread [Done automatically via constructor]
-                (import threading -> e.g. udpReceiveThread = threading.Thread(target=self.ReadUdpNonBlocking, daemon=True))
-        This function keeps looping through the BLOCKING ReceiveData function and sets self.dataRX when data is received and sets received flag
-        This function runs in the background and updates class variables to read data later
-        """
-
-        self.isDataReceived = False # Initially nothing received
-
-        while True:
-            data = self.ReceiveData()  # Blocks (in thread) until data is returned (OR MAYBE UNTIL SOME TIMEOUT AS WELL)
-            self.dataRX = data # Populate AFTER new data is received
-            self.isDataReceived = True
-            # When it reaches here, data received is available
-
-    def ReadReceivedData(self):
-        """
-        This is the function that should be used to read received data
-        Checks if data has been received SINCE LAST CALL, if so it returns the received string and sets flag to False (to avoid re-reading received data)
-        data is None if nothing has been received
-        :return:
-        """
-
-        data = None
-
-        if self.isDataReceived: # if data has been received
-            self.isDataReceived = False
-            data = self.dataRX
-            self.dataRX = None # Empty receive buffer
-
-        return data
+    return info
 
 
-# Create UDP socket to use for sending (and receiving)
-sock = UdpComms(udpIP="127.0.0.1", portTX=8000, portRX=8001, enableRX=True, suppressWarnings=True)
+context = zmq.Context()
+print("Connecting to server...")
+socket = context.socket(zmq.REP)
+socket.bind('tcp://*:5555')
 
-i = 0
 
 while True:
-    sock.SendData('Sent from Python: ' + str(i)) # Send this string to other application
-    i += 1
+    request = socket.recv_multipart()
 
-    data = sock.ReadReceivedData() # read data
-
-    if data != None: # if NEW data has been received since last ReadReceivedData function call
-        print(data) # print new received data
-
-    time.sleep(1)
+    if request[0].decode('utf-8') == 'C':
+        req = json.loads(request[1])
+        print(req)
+        position = get_panel_info(req)
+        print(position)
+        socket.send(json.dumps(position).encode('utf-8'))
+    else:
+        socket.send(b'Error')

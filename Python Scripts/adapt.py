@@ -16,10 +16,15 @@ from skimage.color import rgb2lab
 
 
 class Adapt:
-    def __init__(self, b64img, dim, panelDim, num_panels):
+    def __init__(self, b64img, dim, panelDim, num_panels, occlusion, colorfulness, edgeness, fitts_law):
         self.imgDim = dim
         self.halfImgDim = dim / 2 
         self.num_panels = num_panels
+
+        self.occupancy = occlusion
+        self.colorfulness_weight = colorfulness
+        self.edgeness_weight = edgeness
+        self.fittslaw_weight = fitts_law
 
         # TODO: obtain mCan and mProj values from Hololens
         self.mCam = np.array(  [[0.99693,	0.05401,	0.05667,	0.00708],
@@ -40,17 +45,17 @@ class Adapt:
         img = Image.open(io.BytesIO(imgData))
         self.img = img
 
-        self.occupancy = {}
+        self.occupancyMap = {}
         self.labelPosList = []
         self.uvPlaceList = []
         self.panelDim = []
 
-        for i in range(num_panels):
+        for i in range(self.num_panels):
             self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i])))
     
         for y in range(-100, self.imgDim[0]+500):
             for x in range(-100, self.imgDim[1]+500):
-                self.occupancy[(y, x)] = 0
+                self.occupancyMap[(y, x)] = 0
 
 
     def place(self):
@@ -119,10 +124,72 @@ class Adapt:
                 idxMax = np.unravel_index(idx, panelLogProb.shape)
                 uvMax = np.array([idxMax[1] * rDim[1] + rDim[1]/2, idxMax[0] * rDim[0] + rDim[0]/2])
                 labelPos = self.uv2w(uvMax)
-                if (self.check_occupancy(uvMax, rDim[1], rDim[0]) == 0):
+                if (self.occupancy == False):
+                    break
+                
+                if (self.check_occupancyMap(uvMax, rDim[1], rDim[0]) == 0):
                     break
 
-            self.set_occupancy(uvMax, rDim[1], rDim[0])
+            if (self.occupancy == True):
+                self.set_occupancyMap(uvMax, rDim[1], rDim[0])
+            
+            labelPos = [labelPos[0], labelPos[1], 0.5]
+            self.labelPosList.append(labelPos)
+            self.uvPlaceList.append(uvMax)
+
+        return (self.labelPosList, self.uvPlaceList)
+
+    def weighted_optimization(self):
+        for i in range(self.num_panels):
+            uvAnchor = self.anchorCentre()
+            rDim = self.panelDim[i]
+            rOffset = 0
+            cOffset = 0
+            rSteps = int(self.imgDim[0] / rDim[0])
+            cSteps = int(self.imgDim[1] / rDim[1])
+            panelWeightedSum = np.empty([rSteps, cSteps])
+            
+            for iR in range(rSteps):
+                cOffset = 0
+                for iC in range(cSteps):
+                    crop_rect = (cOffset, rOffset, cOffset + rDim[1], rOffset + rDim[0])                
+                    imgCrop = self.img.crop(crop_rect)
+                    panelPos = np.array([cOffset + rDim[1]/2, rOffset + rDim[0]/2])
+                                       
+                    M = self.colourfulness(imgCrop)                
+                    E = self.edgeness(imgCrop)
+
+                    if len(self.labelPosList) == 0:
+                        F = 0
+                    else:
+                        sum_h = 0
+                        sum_w = 0
+                        for l in self.labelPosList:
+                            sum_h += l[0]
+                            sum_w += l[1]
+                        anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
+                        F = self.fittsLaw(anchor, panelPos, rDim)
+
+                    panelWeightedSum[iR,iC] = M*self.colorfulness_weight + E*self.edgeness_weight + F*self.fittslaw_weight
+                    cOffset += rDim[1]
+                rOffset += rDim[0]
+
+            sortIdx = np.argsort(panelWeightedSum, axis=None)
+
+            for k in range(len(sortIdx)):
+                idx = sortIdx[k]
+                idxMax = np.unravel_index(idx, panelWeightedSum.shape)
+                uvMax = np.array([idxMax[1] * rDim[1] + rDim[1]/2, idxMax[0] * rDim[0] + rDim[0]/2])
+                labelPos = self.uv2w(uvMax)
+                if (self.occupancy == False):
+                    break
+                
+                if (self.check_occupancyMap(uvMax, rDim[1], rDim[0]) == 0):
+                    break
+
+            if (self.occupancy == True):
+                self.set_occupancyMap(uvMax, rDim[1], rDim[0])
+            
             labelPos = [labelPos[0], labelPos[1], 0.5]
             self.labelPosList.append(labelPos)
             self.uvPlaceList.append(uvMax)
@@ -131,7 +198,7 @@ class Adapt:
 
 
     # Checks if a given space is occupied (1 if occupied, 0 if else)
-    def check_occupancy(self, center, panel_w, panel_h):
+    def check_occupancyMap(self, center, panel_w, panel_h):
         min_x = int(center[1]-panel_w/2)
         min_y = int(center[0]-panel_h/2)
         max_x = int(center[1]+panel_w/2)
@@ -139,13 +206,13 @@ class Adapt:
         
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
-                if self.occupancy[(y, x)] == 1:
+                if self.occupancyMap[(y, x)] == 1:
                     return 1
         return 0
 
 
     # Sets a given space as occupied (1 if occupied, 0 if else)
-    def set_occupancy(self, center, panel_w, panel_y):
+    def set_occupancyMap(self, center, panel_w, panel_y):
         min_x = int(center[1]-panel_w/2)
         min_y = int(center[0]-panel_y/2)
         max_x = int(center[1]+panel_w/2)
@@ -153,7 +220,7 @@ class Adapt:
 
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
-                self.occupancy[(y, x)] = 1
+                self.occupancyMap[(y, x)] = 1
 
 
     def color(self, uvPosList):
@@ -524,7 +591,7 @@ def main():
     panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
 
     with open(out_filename, "w") as f:
-        a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels)
+        a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim))
         
         (labelPos, uvPlaces) = a.place()
         (labelColors, textColors) = a.color(uvPlaces)

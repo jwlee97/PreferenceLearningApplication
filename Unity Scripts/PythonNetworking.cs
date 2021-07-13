@@ -1,103 +1,94 @@
-using UnityEngine;
-using System.Collections;
-using System;
-using System.Text;
-using System.Net;
-using System.Net.Sockets;
+using System.Collections.Generic;
 using System.Threading;
+using NetMQ;
+using NetMQ.Sockets;
+using UnityEngine;
 
-public class PythonNetworking: MonoBehaviour {
-    [HideInInspector] public bool isTxStarted = false;
-    [SerializeField] string IP = "127.0.0.1"; // local host
-    [SerializeField] int rxPort = 8000; // port to receive data from Python on
-    [SerializeField] int txPort = 8001; // port to send data to Python on
+public class PythonNetworking {
+    private bool clientStopped;
+    private RequestSocket requestSocket;
 
-    int i = 0; // DELETE THIS: Added to show sending data from Unity to Python via UDP
+    private byte[] frame;
+    // for now only one request at a time is supported
+    public string requestResult;
+    private bool isAvailable;
 
-    // Create necessary UdpClient objects
-    UdpClient client;
-    IPEndPoint remoteEndPoint;
-    Thread receiveThread; // Receiving Thread
+    public PythonNetworking(bool sendWebCamFeed) {
+        clientStopped = false;
+        var clientThread = new Thread(NetMQClient);
+        clientThread.Start();
 
-    IEnumerator SendDataCoroutine() // DELETE THIS: Added to show sending data from Unity to Python via UDP
-    {
-        while (true)
+        if (sendWebCamFeed) {
+            var webCamUpload = new Thread(WebCamUpload);
+            webCamUpload.Start();
+        }
+    }
+    
+
+    public void StopClient() {
+        clientStopped = true;
+    }
+
+    // ReSharper disable once InconsistentNaming
+    private void NetMQClient() {
+        AsyncIO.ForceDotNet.Force();
+
+        requestSocket = new RequestSocket();
+        // "tcp://192.168.0.104:5555"
+        requestSocket.Connect("tcp://127.0.0.1:5555");
+        
+        isAvailable = true;
+
+        while (!clientStopped)
         {
-            SendData("Sent from Unity: " + i.ToString());
-            i++;
-            yield return new WaitForSeconds(1f);
+            //Debug.Log("Continuing");
+        }
+
+        requestSocket.Close();
+        NetMQConfig.Cleanup();
+    }
+
+    private void WebCamUpload() {
+        while (true) {
+            if (clientStopped) return;
+            if (frame == null) continue;
+            requestSocket.SendMoreFrame("F");
+            var frameBase64 = System.Convert.ToBase64String(frame);
+            requestSocket.SendFrame(frameBase64);
+            // handle result when response is sent
+            requestSocket.ReceiveFrameString();
         }
     }
 
-    public void SendData(string message) // Use to send data to Python
-    {
-        try
-        {
-            byte[] data = Encoding.UTF8.GetBytes(message);
-            client.Send(data, data.Length, remoteEndPoint);
-        }
-        catch (Exception err)
-        {
-            print(err.ToString());
-        }
+    public void SetFrame(byte[] currFrame) {
+        frame = currFrame;
     }
 
-    void Awake()
-    {
-        // Create remote endpoint (to Matlab) 
-        remoteEndPoint = new IPEndPoint(IPAddress.Parse(IP), txPort);
-
-        // Create local client
-        client = new UdpClient(rxPort);
-
-        // local endpoint define (where messages are received)
-        // Create a new thread for reception of incoming messages
-        receiveThread = new Thread(new ThreadStart(ReceiveData));
-        receiveThread.IsBackground = true;
-        receiveThread.Start();
-
-        // Initialize (seen in comments window)
-        print("UDP Comms Initialised");
-
-        StartCoroutine(SendDataCoroutine()); // DELETE THIS: Added to show sending data from Unity to Python via UDP
-    }
-
-    // Receive data, update packets received
-    private void ReceiveData()
-    {
-        while (true)
-        {
-            try
-            {
-                IPEndPoint anyIP = new IPEndPoint(IPAddress.Any, 0);
-                byte[] data = client.Receive(ref anyIP);
-                string text = Encoding.UTF8.GetString(data);
-                print(">> " + text);
-                ProcessInput(text);
-            }
-            catch (Exception err)
-            {
-                print(err.ToString());
-            }
+    // Create queue of requests in case multiple have to be handled
+    private void SimpleRequest(string endpoint, string request) {
+        // wait until socket is available
+        while (!isAvailable) {
+            //Debug.Log("Socket unavailable");
         }
-    }
 
-    private void ProcessInput(string input)
-    {
-        // PROCESS INPUT RECEIVED STRING HERE
-
-        if (!isTxStarted) // First data arrived so tx started
-        {
-            isTxStarted = true;
+        isAvailable = false;
+        if (request == null) {
+            requestSocket.SendFrame(endpoint);
+        } else {
+            Debug.Log(request);
+            requestSocket.SendMoreFrame(endpoint);
+            requestSocket.SendFrame(request);
         }
+
+        var msg = requestSocket.ReceiveFrameBytes();
+        isAvailable = true;
+        requestResult = System.Text.Encoding.UTF8.GetString(msg);
+        //requestResult = JsonUtility.FromJson<T>(msgString);
     }
 
-    //Prevent crashes - close clients and threads properly!
-    void OnDisable()
-    {
-        if (receiveThread != null)
-            receiveThread.Abort();
-
-        client.Close();
+    public void PerformRequest(string endpoint, string request) {
+        requestResult = null;
+        var requestThread = new Thread(() => SimpleRequest(endpoint, request));
+        requestThread.Start();
     }
 }

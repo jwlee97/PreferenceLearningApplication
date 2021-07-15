@@ -18,7 +18,7 @@ class Adapt:
         self.halfImgDim = imgDim / 2
         self.num_panels = num_panels
 
-        self.occupancy = occlusion
+        self.occlusion = occlusion # True if occlusion is enabled
         self.colorfulness_weight = colorfulness
         self.edgeness_weight = edgeness
         self.fittslaw_weight = fitts_law
@@ -50,9 +50,10 @@ class Adapt:
         for i in range(self.num_panels):
             self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i])))
     
-        for y in range(self.imgDim[0]):
-            for x in range(self.imgDim[1]):
-                self.occupancyMap[(y, x)] = 0
+        if self.occlusion == False:
+            for y in range(self.imgDim[0]):
+                for x in range(self.imgDim[1]):
+                    self.occupancyMap[(y, x)] = 0
 
 
     def place(self):
@@ -120,13 +121,13 @@ class Adapt:
                 idxMax = np.unravel_index(idx, panelLogProb.shape)
                 uvMax = np.array([idxMax[1] * panel_dim[1] + panel_dim[1]/2, idxMax[0] * panel_dim[0] + panel_dim[0]/2])
                 labelPos = self.uv2w(uvMax)
-                if (self.occupancy == False):
+                if (self.occlusion == True):
                     break
                 
                 if (self.check_occupancyMap(uvMax, panel_dim[1], panel_dim[0]) == 0):
                     break
 
-            if (self.occupancy == True):
+            if (self.occlusion == False):
                 self.set_occupancyMap(uvMax, panel_dim[1], panel_dim[0])
             
             labelPos = [labelPos[0], labelPos[1], 0.5]
@@ -171,12 +172,17 @@ class Adapt:
             sorted_pts = {k: v for k, v in sorted(panelWeightedSum.items(), key=lambda item: item[1])}
             sorted_keys = list(sorted_pts.keys())
         
-            for k in sorted_keys:
-                if self.check_occupancyMap(k, panel_dim[1], panel_dim[0]) == 0:
-                    self.set_occupancyMap(k, panel_dim[1], panel_dim[0])
-                    labelPos = [k[0], k[1], 0.5]
-                    self.labelPosList.append(labelPos)
-                    self.uvPlaceList.append(k)
+            if (self.occlusion == False):
+                for k in sorted_keys:
+                    if self.check_occupancyMap(k, panel_dim[1], panel_dim[0]) == 0:
+                        self.set_occupancyMap(k, panel_dim[1], panel_dim[0])
+                        labelPos = [k[0], k[1], 0.5]
+                        self.labelPosList.append(labelPos)
+                        self.uvPlaceList.append(k)
+            else:
+                labelPos = [sorted_keys[0][0], sorted_keys[0][1], 0.5]
+                self.labelPosList.append(labelPos)
+                self.uvPlaceList.append(sorted_keys[0])
 
         return (self.labelPosList, self.uvPlaceList)
 
@@ -540,7 +546,8 @@ def test():
 
     img_dim = [504, 896]
     panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
-    occlusion = True
+    occlusion = False
+    color_harmony = False
     num_panels = 4
     color_harmony_template = 93.6
     colorfulness = 0.33
@@ -551,7 +558,11 @@ def test():
     (labelPos, uvPlace) = a.weighted_optimization()
     (labelColor, textColor) = a.color(uvPlace)
     print(labelColor)
-    colors =  a.colorHarmony(labelColor[0], color_harmony_template)
+
+    if color_harmony == True:
+        colors =  a.colorHarmony(labelColor[0], color_harmony_template)
+    else:
+        colors = labelColor
 
     for i in range(num_panels):
         min_y = int(uvPlace[i][0] - a.panelDim[i][0]/2)

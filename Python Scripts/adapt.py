@@ -8,17 +8,14 @@ import numpy as np
 import io
 
 import cv2
-from scipy import ndimage
-from matplotlib.patches import Rectangle
-from matplotlib import colors
-from matplotlib import pyplot as plt
 from skimage.color import rgb2lab
+from matplotlib import colors
 
 
 class Adapt:
-    def __init__(self, b64img, dim, panelDim, num_panels, occlusion, colorfulness, edgeness, fitts_law):
-        self.imgDim = dim
-        self.halfImgDim = dim / 2 
+    def __init__(self, b64img, imgDim, panelDim, num_panels, occlusion, colorfulness, edgeness, fitts_law):
+        self.imgDim = imgDim
+        self.halfImgDim = imgDim / 2
         self.num_panels = num_panels
 
         self.occupancy = occlusion
@@ -53,20 +50,19 @@ class Adapt:
         for i in range(self.num_panels):
             self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i])))
     
-        for y in range(-100, self.imgDim[0]+500):
-            for x in range(-100, self.imgDim[1]+500):
+        for y in range(self.imgDim[0]):
+            for x in range(self.imgDim[1]):
                 self.occupancyMap[(y, x)] = 0
 
 
     def place(self):
-        idxList = []
         for i in range(self.num_panels):
             uvAnchor = self.anchorCentre()
-            rDim = self.panelDim[i]
+            panel_dim = self.panelDim[i]
             rOffset = 0
             cOffset = 0
-            rSteps = int(self.imgDim[0] / rDim[0])
-            cSteps = int(self.imgDim[1] / rDim[1])
+            rSteps = int(self.imgDim[0] / panel_dim[0])
+            cSteps = int(self.imgDim[1] / panel_dim[1])
             panelM = np.empty([rSteps, cSteps])
             panelE = np.empty([rSteps, cSteps])
             panelLogProb  = np.empty([rSteps, cSteps])
@@ -76,13 +72,13 @@ class Adapt:
                 for iC in range(cSteps):
 
                     # crop image
-                    crop_rect = (cOffset, rOffset, cOffset + rDim[1], rOffset + rDim[0])                
+                    crop_rect = (cOffset, rOffset, cOffset + panel_dim[1], rOffset + panel_dim[0])                
                     imgCrop = self.img.crop(crop_rect)
 
                     # panel centre
-                    panelPos = np.array([cOffset + rDim[1]/2, rOffset + rDim[0]/2])
+                    panelPos = np.array([cOffset + panel_dim[1]/2, rOffset + panel_dim[0]/2])
                     posOffset = panelPos - uvAnchor
-                    offsetNorm = np.array([abs(posOffset[0]/rDim[0]), abs(posOffset[1]/rDim[1])])
+                    offsetNorm = np.array([abs(posOffset[0]/panel_dim[0]), abs(posOffset[1]/panel_dim[1])])
                                                     
                     M = self.colourfulness(imgCrop)                
                     #panelM[iR,iC] = M
@@ -99,7 +95,7 @@ class Adapt:
                             sum_h += l[0]
                             sum_w += l[1]
                         anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
-                        F = self.fittsLaw(anchor, panelPos, rDim)
+                        F = self.fittsLaw(anchor, panelPos, panel_dim)
 
                     panelLogProb[iR,iC] = ( self.offsetLogProb(offsetNorm) +
                                             self.colourfulnessLogProb(M) +
@@ -109,9 +105,9 @@ class Adapt:
                     # TEMP fig only
                     panelE[iR,iC] = self.edgenessLogProb(E)
 
-                    cOffset += rDim[1]
+                    cOffset += panel_dim[1]
                     
-                rOffset += rDim[0]
+                rOffset += panel_dim[0]
 
             #print(np.array2string(panelLogProb, formatter={'float_kind':lambda panelLogProb: "%.2f" % panelLogProb}))
             #print(np.array2string(panelF, formatter={'float_kind':lambda panelF: "%.2f" % panelF}))
@@ -122,16 +118,16 @@ class Adapt:
                 idx = sortIdx[k]
                 #sortIdx = np.argmax(panelLogProb, axis=None)
                 idxMax = np.unravel_index(idx, panelLogProb.shape)
-                uvMax = np.array([idxMax[1] * rDim[1] + rDim[1]/2, idxMax[0] * rDim[0] + rDim[0]/2])
+                uvMax = np.array([idxMax[1] * panel_dim[1] + panel_dim[1]/2, idxMax[0] * panel_dim[0] + panel_dim[0]/2])
                 labelPos = self.uv2w(uvMax)
                 if (self.occupancy == False):
                     break
                 
-                if (self.check_occupancyMap(uvMax, rDim[1], rDim[0]) == 0):
+                if (self.check_occupancyMap(uvMax, panel_dim[1], panel_dim[0]) == 0):
                     break
 
             if (self.occupancy == True):
-                self.set_occupancyMap(uvMax, rDim[1], rDim[0])
+                self.set_occupancyMap(uvMax, panel_dim[1], panel_dim[0])
             
             labelPos = [labelPos[0], labelPos[1], 0.5]
             self.labelPosList.append(labelPos)
@@ -139,22 +135,22 @@ class Adapt:
 
         return (self.labelPosList, self.uvPlaceList)
 
+
     def weighted_optimization(self):
+        increment_x = 20
+        increment_y = 20
+        sq_w = math.floor(self.imgDim[1]/increment_x)
+        sq_h = math.floor(self.imgDim[0]/increment_y)
+
         for i in range(self.num_panels):
-            uvAnchor = self.anchorCentre()
-            rDim = self.panelDim[i]
-            rOffset = 0
-            cOffset = 0
-            rSteps = int(self.imgDim[0] / rDim[0])
-            cSteps = int(self.imgDim[1] / rDim[1])
-            panelWeightedSum = np.empty([rSteps, cSteps])
+            panel_dim = self.panelDim[i]
+            panelWeightedSum = {}
             
-            for iR in range(rSteps):
-                cOffset = 0
-                for iC in range(cSteps):
-                    crop_rect = (cOffset, rOffset, cOffset + rDim[1], rOffset + rDim[0])                
+            for y in range(0,int(self.imgDim[0]-panel_dim[0]), sq_h):
+                for x in range(0,int(self.imgDim[1]-panel_dim[1]), sq_w):
+                    crop_rect = (x, y, x+panel_dim[1], y+panel_dim[0])              
                     imgCrop = self.img.crop(crop_rect)
-                    panelPos = np.array([cOffset + rDim[1]/2, rOffset + rDim[0]/2])
+                    center = (int(y+panel_dim[0]/2), int(x+panel_dim[1]/2))
                                        
                     M = self.colourfulness(imgCrop)                
                     E = self.edgeness(imgCrop)
@@ -168,31 +164,19 @@ class Adapt:
                             sum_h += l[0]
                             sum_w += l[1]
                         anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
-                        F = self.fittsLaw(anchor, panelPos, rDim)
+                        F = self.fittsLaw(anchor, center, panel_dim)
 
-                    panelWeightedSum[iR,iC] = M*self.colorfulness_weight + E*self.edgeness_weight + F*self.fittslaw_weight
-                    cOffset += rDim[1]
-                rOffset += rDim[0]
+                    panelWeightedSum[center] = M*self.colorfulness_weight + E*self.edgeness_weight + F*self.fittslaw_weight
 
-            sortIdx = np.argsort(panelWeightedSum, axis=None)
-
-            for k in range(len(sortIdx)):
-                idx = sortIdx[k]
-                idxMax = np.unravel_index(idx, panelWeightedSum.shape)
-                uvMax = np.array([idxMax[1] * rDim[1] + rDim[1]/2, idxMax[0] * rDim[0] + rDim[0]/2])
-                labelPos = self.uv2w(uvMax)
-                if (self.occupancy == False):
-                    break
-                
-                if (self.check_occupancyMap(uvMax, rDim[1], rDim[0]) == 0):
-                    break
-
-            if (self.occupancy == True):
-                self.set_occupancyMap(uvMax, rDim[1], rDim[0])
-            
-            labelPos = [labelPos[0], labelPos[1], 0.5]
-            self.labelPosList.append(labelPos)
-            self.uvPlaceList.append(uvMax)
+            sorted_pts = {k: v for k, v in sorted(panelWeightedSum.items(), key=lambda item: item[1])}
+            sorted_keys = list(sorted_pts.keys())
+        
+            for k in sorted_keys:
+                if self.check_occupancyMap(k, panel_dim[1], panel_dim[0]) == 0:
+                    self.set_occupancyMap(k, panel_dim[1], panel_dim[0])
+                    labelPos = [k[0], k[1], 0.5]
+                    self.labelPosList.append(labelPos)
+                    self.uvPlaceList.append(k)
 
         return (self.labelPosList, self.uvPlaceList)
 
@@ -240,11 +224,6 @@ class Adapt:
                         uvPos[1] + self.panelDim[i][0]/2 )                
         panelBG = self.img.crop(crop_rect)
         
-        # DEV ONLY Show panel
-        #plt.imshow(panelBG, interpolation='nearest')
-        #plt.show()
-
-        #medianColor = ImageStat.Stat(panelBG).median
         dominantColor = self.dominantColor(panelBG)
 
         # Retrieve color distribution given dominant color and select best
@@ -255,10 +234,6 @@ class Adapt:
         pLogProbs = ( np.array(pColorLogProbs) + np.array(pLightnessLogProbs) )
         if (self.colorScheme):
             pLogProbs = pLogProbs + np.array(pColorScheme)
-
-        #print(pColorLogProbs)
-        #print(pLightnessLogProbs)
-        #print(pLogProbs)
 
         iHueBin = np.argmax(pLogProbs)
 
@@ -318,13 +293,14 @@ class Adapt:
 
         return domColor
 
-    def colorHarmony(self, rgb_color, angle_size):
+    def colorHarmony(self, RGB, angle_size):
         ret = []
-        hsv_color = colorsys.rgb_to_hsv(rgb_color[0], rgb_color[1], rgb_color[2])
-        hsv_color = (hsv_color[0]*180, hsv_color[0]*255, hsv_color[0]*255)
 
-        start = hsv_color[0] - angle_size
-        start_angle = random.uniform(start, hsv_color[0])
+        RGB_s = np.divide(RGB, 255.0)
+        HSV = colors.rgb_to_hsv(RGB_s)
+
+        start = HSV[0]*360 - angle_size
+        start_angle = random.uniform(start, HSV[0]*360)
         end_angle = start_angle + angle_size
         
         for i in range(self.num_panels):
@@ -332,9 +308,9 @@ class Adapt:
             if angle < 0:
                 angle = 360 + angle
             
-            rgb = colorsys.hsv_to_rgb(angle/180, hsv_color[1]/255, hsv_color[2]/255)
-            rgb = (rgb[0]*255, rgb[1]*255, rgb[2]*255)
-            ret.append(rgb)
+            RGB_ret = colors.hsv_to_rgb([angle/360, HSV[1], HSV[2]])
+            RGB_ret = np.multiply(RGB_ret, 255.0)
+            ret.append(RGB_ret)
 
         return ret
 
@@ -427,7 +403,6 @@ class Adapt:
         #placePosStr = np.array2string(patchLogProb, formatter={'float_kind':lambda placePos: "%.3f," % placePos})
         msg = "%s;%s;%s" % (placePosStr, labelColorStr, textColorStr)
         return msg
-
 
     def w2uv(self, wPos):
         mCamInv = np.linalg.inv(self.mCam)
@@ -554,64 +529,72 @@ class Adapt:
         b = (color[0] * 299 + color[1] * 587 + color[2] * 114) / 1000
         return b
 
-def parse_csv(panel_file):
-    with open(panel_file, 'r') as f:
-        panel_info = [{k: v for k, v in row.items()}
-            for row in csv.DictReader(f, skipinitialspace=True)]
-        return panel_info
 
 def test():
-    f = open("C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\context_img_buff_1623145003.log", "r")
+    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
+    f = open(directory + "context_img_buff_1623145003.log", "r")
     byte_arr = bytes(f.read(), 'utf-8')
+    out_file = directory + '\\out\\' + 'out.png'
+    img_path = directory + "context_img_1623145003.png"
+    img = cv2.imread(img_path)
 
     img_dim = [504, 896]
-    patch_dim = [63, 112]
-    label_dim = [0.2, 0.05]
+    panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
+    occlusion = True
+    num_panels = 4
+    color_harmony_template = 93.6
+    colorfulness = 0.33
+    edgeness = 0.33
+    fitts_law = 0.33
 
-    a = Adapt(np.array(img_dim), np.array(patch_dim), np.array(label_dim))
-    (labelPos, uvPlace) = a.place(byte_arr)
+    a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
+    (labelPos, uvPlace) = a.weighted_optimization()
     (labelColor, textColor) = a.color(uvPlace)
-    adaptPayload = a.msgString(labelPos, labelColor, textColor)
-    print(adaptPayload)
-    #plt.imshow(adapt.img, interpolation='nearest')
+    print(labelColor)
+    colors =  a.colorHarmony(labelColor[0], color_harmony_template)
 
-    print(a.colorHarmony(labelColor, 93.6, 5))
+    for i in range(num_panels):
+        min_y = int(uvPlace[i][0] - a.panelDim[i][0]/2)
+        max_y = int(uvPlace[i][0] + a.panelDim[i][0]/2)
+        min_x = int(uvPlace[i][1] - a.panelDim[i][1]/2)
+        max_x = int(uvPlace[i][1] + a.panelDim[i][1]/2)
+        cv2.rectangle(img, (min_x, min_y), (max_x, max_y), colors[i], -1)
+    
+    cv2.imwrite(out_file, img)
 
 
 def main():
     directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
     f = open(directory + "context_img_buff_1623145003.log", "r")
     byte_arr = bytes(f.read(), 'utf-8')
-    out_filename = directory + 'out.txt'
-    print('Saving info to %s' % out_filename)
+    out_file = directory + 'out.txt'
+    print('Saving info to %s' % out_file)
 
-    num_panels = 4
-    color_harmony_template = 93.6
     img_dim = [504, 896]
     panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
+    occlusion = True
+    num_panels = 4
+    color_harmony_template = 93.6
+    colorfulness = 0.33
+    edgeness = 0.33
+    fitts_law = 0.33
 
-    with open(out_filename, "w") as f:
-        a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim))
+    with open(out_file, "w") as f:
+        a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
         
         (labelPos, uvPlaces) = a.place()
         (labelColors, textColors) = a.color(uvPlaces)
+        colors = a.colorHarmony(labelColors[0], color_harmony_template)
    
         for i in range(num_panels):
             dim_str = str(panel_dim[i][0]) + ',' + str(panel_dim[i][1])
             pos_str = str(labelPos[i][0]) + ',' + str(labelPos[i][1]) + ',' + str(labelPos[i][2])
-            
-            if (i == 0):
-                color = a.colorHarmony(labelColors[i], color_harmony_template)
-                color_str = str(labelColors[i][0]) + ',' + str(labelColors[i][1]) + ',' + str(labelColors[i][2])
-            else:
-                color_str = str(color[i][0]) + ',' + str(color[i][1]) + ',' + str(color[i][2])
-
+            color_str = str(colors[i][0]) + ',' + str(colors[i][1]) + ',' + str(colors[i][2])
             text_color_str = str(textColors[i][0]) + ',' + str(textColors[i][1]) + ',' + str(textColors[i][2])
 
             line =  dim_str + ';' + pos_str + ';' + color_str + ';' + text_color_str + '\n'
             print(line)
             f.write(line)
 
-
 if __name__ == "__main__":
-    main()
+    test()

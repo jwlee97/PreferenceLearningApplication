@@ -176,11 +176,14 @@ class Adapt:
                 for k in sorted_keys:
                     if self.check_occupancyMap(k, panel_dim[1], panel_dim[0]) == 0:
                         self.set_occupancyMap(k, panel_dim[1], panel_dim[0])
-                        labelPos = [k[0], k[1], 0.5]
+                        wPos = self.uv2w(k)
+                        labelPos = [wPos[0], wPos[1], 0.5]
                         self.labelPosList.append(labelPos)
                         self.uvPlaceList.append(k)
+                        break
             else:
-                labelPos = [sorted_keys[0][0], sorted_keys[0][1], 0.5]
+                wPos = self.uv2w(sorted_keys[0])
+                labelPos = [wPos[0], wPos[1], 0.5]
                 self.labelPosList.append(labelPos)
                 self.uvPlaceList.append(sorted_keys[0])
 
@@ -557,7 +560,7 @@ def test():
     a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
     (labelPos, uvPlace) = a.weighted_optimization()
     (labelColor, textColor) = a.color(uvPlace)
-    print(labelColor)
+    print(labelPos)
 
     if color_harmony == True:
         colors =  a.colorHarmony(labelColor[0], color_harmony_template)

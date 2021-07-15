@@ -15,6 +15,7 @@ def get_panel_info(request):
     panel_dim = []
     num_panels = request["numPanels"]
     occlusion = request["occlusion"]
+    color_harmony = request["colorHarmony"]
     constraints = request["constraints"]
     colorfulness = request["colorfulness"]
     edgeness = request["edgeness"]
@@ -27,17 +28,16 @@ def get_panel_info(request):
         
     (labelPos, uvPlaces) = a.weighted_optimization()
     (labelColors, textColors) = a.color(uvPlaces)
+
+    if color_harmony == True:
+        colors =  a.colorHarmony(labelColors[0], color_harmony_template)
+    else:
+        colors = labelColors
    
     for i in range(num_panels):
         dim_str = str(panel_dim[i][0]) + ',' + str(panel_dim[i][1])
         pos_str = str(labelPos[i][0]) + ',' + str(labelPos[i][1]) + ',' + str(labelPos[i][2])
-            
-        if (i == 0):
-            color = a.colorHarmony(labelColors[i], color_harmony_template)
-            color_str = str(labelColors[i][0]) + ',' + str(labelColors[i][1]) + ',' + str(labelColors[i][2])
-        else:
-            color_str = str(color[i][0]) + ',' + str(color[i][1]) + ',' + str(color[i][2])
-
+        color_str = str(colors[i][0]) + ',' + str(colors[i][1]) + ',' + str(colors[i][2])
         text_color_str = str(textColors[i][0]) + ',' + str(textColors[i][1]) + ',' + str(textColors[i][2])
         line =  dim_str + ';' + pos_str + ';' + color_str + ';' + text_color_str
         info.append(line)

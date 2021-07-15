@@ -17,11 +17,12 @@ public static class Serialization {
     
     [Serializable]
     public class ComputePositionRequest {
-        public ComputePositionRequest(int numPanels, UITool.PanelConstraints[] constraints, bool occlusion, float colorfulness, float edgeness, float fittsLaw)
+        public ComputePositionRequest(int numPanels, UITool.PanelConstraints[] constraints, bool occlusion, bool colorHarmony, float colorfulness, float edgeness, float fittsLaw)
         {
             this.numPanels = numPanels;
             this.constraints = constraints;
             this.occlusion = occlusion;
+            this.colorHarmony = colorHarmony;
             this.colorfulness = colorfulness;
             this.edgeness = edgeness;
             this.fittsLaw = fittsLaw;
@@ -29,6 +30,7 @@ public static class Serialization {
         public int numPanels;
         public UITool.PanelConstraints[] constraints;
         public bool occlusion;
+        public bool colorHarmony;
         public float colorfulness;
         public float edgeness;
         public float fittsLaw;

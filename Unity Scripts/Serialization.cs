@@ -17,7 +17,9 @@ public static class Serialization {
     
     [Serializable]
     public class ComputePositionRequest {
-        public ComputePositionRequest(int numPanels, UITool.PanelConstraints[] constraints, bool occlusion, bool colorHarmony, float colorfulness, float edgeness, float fittsLaw)
+        public ComputePositionRequest(int numPanels, UITool.PanelConstraints[] constraints, bool occlusion,
+                                      bool colorHarmony, float colorfulness, float edgeness, float fittsLaw,
+                                      float ce, float muscleActivation, float rula)
         {
             this.numPanels = numPanels;
             this.constraints = constraints;
@@ -26,6 +28,9 @@ public static class Serialization {
             this.colorfulness = colorfulness;
             this.edgeness = edgeness;
             this.fittsLaw = fittsLaw;
+            this.ce = ce;
+            this.muscleActivation = muscleActivation;
+            this.rula = rula;
         }
         public int numPanels;
         public UITool.PanelConstraints[] constraints;
@@ -34,5 +39,8 @@ public static class Serialization {
         public float colorfulness;
         public float edgeness;
         public float fittsLaw;
+        public float ce;
+        public float muscleActivation;
+        public float rula;
     }
 }

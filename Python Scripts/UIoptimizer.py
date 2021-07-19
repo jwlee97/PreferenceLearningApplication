@@ -1,19 +1,21 @@
-import colorsys
-import random
-import csv
-import math
 import base64
-from PIL import Image
-import numpy as np
 import io
+import math
+import numpy as np
+import random
+
+import linalg_helpers as linalg
+import arm_position_helpers as armpos
 
 import cv2
 from skimage.color import rgb2lab
 from matplotlib import colors
+from PIL import Image
 
 
-class Adapt:
-    def __init__(self, b64img, imgDim, panelDim, num_panels, occlusion, colorfulness, edgeness, fitts_law):
+class UIOptimizer:
+    def __init__(self, b64img, imgDim, panelDim, num_panels, occlusion, colorfulness, edgeness,
+                 fitts_law, ce, muscle_act, rula, arm_proper_length=33, forearm_hand_length=46, spacing=10):
         self.imgDim = imgDim
         self.halfImgDim = imgDim / 2
         self.num_panels = num_panels
@@ -22,6 +24,13 @@ class Adapt:
         self.colorfulness_weight = colorfulness
         self.edgeness_weight = edgeness
         self.fittslaw_weight = fitts_law
+        self.ce_weight = ce
+        self.muscle_act_weight = muscle_act
+        self.rula_weight = rula
+
+        self.forearm_hand_length = forearm_hand_length
+        self.arm_proper_length = arm_proper_length
+        self.arm_total_length = arm_proper_length + forearm_hand_length
 
         # TODO: obtain mCan and mProj values from Hololens
         self.mCam = np.array(  [[0.99693,	0.05401,	0.05667,	0.00708],
@@ -47,173 +56,105 @@ class Adapt:
         self.uvPlaceList = []
         self.panelDim = []
 
+        self.voxels = armpos.compute_interaction_space(spacing,
+                                                       [(-15, self.arm_total_length), (-self.arm_total_length, self.arm_total_length),
+                                                       (-self.arm_proper_length / 2 - forearm_hand_length, self.arm_total_length)],
+                                                        self.arm_total_length)
+
         for i in range(self.num_panels):
-            self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i])))
+            self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i]))) # panel dimensions in uv space
     
         if self.occlusion == False:
-            for y in range(self.imgDim[0]):
-                for x in range(self.imgDim[1]):
+            for y in range(imgDim[0]):
+                for x in range(imgDim[1]):
                     self.occupancyMap[(y, x)] = 0
 
 
-    def place(self):
-        for i in range(self.num_panels):
-            uvAnchor = self.anchorCentre()
-            panel_dim = self.panelDim[i]
-            rOffset = 0
-            cOffset = 0
-            rSteps = int(self.imgDim[0] / panel_dim[0])
-            cSteps = int(self.imgDim[1] / panel_dim[1])
-            panelM = np.empty([rSteps, cSteps])
-            panelE = np.empty([rSteps, cSteps])
-            panelLogProb  = np.empty([rSteps, cSteps])
-            
-            for iR in range(rSteps):
-                cOffset = 0
-                for iC in range(cSteps):
-
-                    # crop image
-                    crop_rect = (cOffset, rOffset, cOffset + panel_dim[1], rOffset + panel_dim[0])                
-                    imgCrop = self.img.crop(crop_rect)
-
-                    # panel centre
-                    panelPos = np.array([cOffset + panel_dim[1]/2, rOffset + panel_dim[0]/2])
-                    posOffset = panelPos - uvAnchor
-                    offsetNorm = np.array([abs(posOffset[0]/panel_dim[0]), abs(posOffset[1]/panel_dim[1])])
-                                                    
-                    M = self.colourfulness(imgCrop)                
-                    #panelM[iR,iC] = M
-                    
-                    E = self.edgeness(imgCrop)
-                    #panelE[iR,iC] = E
-
-                    if len(self.labelPosList) == 0:
-                        F = 0
-                    else:
-                        sum_h = 0
-                        sum_w = 0
-                        for l in self.labelPosList:
-                            sum_h += l[0]
-                            sum_w += l[1]
-                        anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
-                        F = self.fittsLaw(anchor, panelPos, panel_dim)
-
-                    panelLogProb[iR,iC] = ( self.offsetLogProb(offsetNorm) +
-                                            self.colourfulnessLogProb(M) +
-                                            self.edgenessLogProb(E))
-                                            #-0.5*F )
-
-                    # TEMP fig only
-                    panelE[iR,iC] = self.edgenessLogProb(E)
-
-                    cOffset += panel_dim[1]
-                    
-                rOffset += panel_dim[0]
-
-            #print(np.array2string(panelLogProb, formatter={'float_kind':lambda panelLogProb: "%.2f" % panelLogProb}))
-            #print(np.array2string(panelF, formatter={'float_kind':lambda panelF: "%.2f" % panelF}))
-            
-            sortIdx = np.argsort(-panelLogProb, axis=None)
-
-            for k in range(len(sortIdx)):
-                idx = sortIdx[k]
-                #sortIdx = np.argmax(panelLogProb, axis=None)
-                idxMax = np.unravel_index(idx, panelLogProb.shape)
-                uvMax = np.array([idxMax[1] * panel_dim[1] + panel_dim[1]/2, idxMax[0] * panel_dim[0] + panel_dim[0]/2])
-                labelPos = self.uv2w(uvMax)
-                if (self.occlusion == True):
-                    break
-                
-                if (self.check_occupancyMap(uvMax, panel_dim[1], panel_dim[0]) == 0):
-                    break
-
-            if (self.occlusion == False):
-                self.set_occupancyMap(uvMax, panel_dim[1], panel_dim[0])
-            
-            labelPos = [labelPos[0], labelPos[1], 0.5]
-            self.labelPosList.append(labelPos)
-            self.uvPlaceList.append(uvMax)
-
-        return (self.labelPosList, self.uvPlaceList)
-
-
     def weighted_optimization(self):
-        increment_x = 20
-        increment_y = 20
-        sq_w = math.floor(self.imgDim[1]/increment_x)
-        sq_h = math.floor(self.imgDim[0]/increment_y)
-
         for i in range(self.num_panels):
             panel_dim = self.panelDim[i]
             panelWeightedSum = {}
-            
-            for y in range(0,int(self.imgDim[0]-panel_dim[0]), sq_h):
-                for x in range(0,int(self.imgDim[1]-panel_dim[1]), sq_w):
-                    crop_rect = (x, y, x+panel_dim[1], y+panel_dim[0])              
-                    imgCrop = self.img.crop(crop_rect)
-                    center = (int(y+panel_dim[0]/2), int(x+panel_dim[1]/2))
+
+            for v in self.voxels:
+                uv = self.w2uv([v[1]/100, v[0]/100, v[2]/100])
+                crop_rect = (uv[1], uv[0], uv[1]+panel_dim[1], uv[0]+panel_dim[0])         
+                imgCrop = self.img.crop(crop_rect)
+                arm_pos = self.get_pose(v)
                                        
-                    M = self.colourfulness(imgCrop)                
-                    E = self.edgeness(imgCrop)
+                M = self.colourfulness(imgCrop)                
+                E = self.edgeness(imgCrop)
+                CE = 0
+                MA = 0
+                R = 0
 
-                    if len(self.labelPosList) == 0:
-                        F = 0
-                    else:
-                        sum_h = 0
-                        sum_w = 0
-                        for l in self.labelPosList:
-                            sum_h += l[0]
-                            sum_w += l[1]
-                        anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
-                        F = self.fittsLaw(anchor, center, panel_dim)
+                if (arm_pos != []):
+                    CE = self.consumed_endurance(arm_pos)
+                    MA = self.muscle_activation_reserve_function(arm_pos)
+                    R = self.rula(arm_pos)
 
-                    panelWeightedSum[center] = M*self.colorfulness_weight + E*self.edgeness_weight + F*self.fittslaw_weight
+                if len(self.labelPosList) == 0:
+                    F = 0
+                else:
+                    sum_h = 0
+                    sum_w = 0
+                    for l in self.labelPosList:
+                        sum_h += l[0]
+                        sum_w += l[1]
+                    anchor = (int(sum_h/len(self.labelPosList)), int(sum_w/len(self.labelPosList)))
+                    F = self.fittsLaw(anchor, uv, panel_dim)
+
+                panelWeightedSum[(v[0], v[1], v[2])] = M*self.colorfulness_weight + E*self.edgeness_weight + F*self.fittslaw_weight + \
+                                                        CE*self.ce_weight + MA*self.muscle_act_weight + R*self.rula_weight
 
             sorted_pts = {k: v for k, v in sorted(panelWeightedSum.items(), key=lambda item: item[1])}
             sorted_keys = list(sorted_pts.keys())
         
             if (self.occlusion == False):
                 for k in sorted_keys:
-                    if self.check_occupancyMap(k, panel_dim[1], panel_dim[0]) == 0:
-                        self.set_occupancyMap(k, panel_dim[1], panel_dim[0])
-                        wPos = self.uv2w(k)
-                        labelPos = [wPos[0], wPos[1], 0.5]
-                        self.labelPosList.append(labelPos)
-                        self.uvPlaceList.append(k)
+                    uvPos = self.w2uv([k[1]/100, k[0]/100, k[2]/100])
+                    if self.check_occupancyMap(uvPos, panel_dim) == 0:
+                        self.set_occupancyMap(uvPos, panel_dim)
+                        wPos = [k[1]/100, k[0]/100, k[2]/100]
+                        self.labelPosList.append(wPos)
+                        self.uvPlaceList.append(uvPos)
                         break
             else:
-                wPos = self.uv2w(sorted_keys[0])
-                labelPos = [wPos[0], wPos[1], 0.5]
-                self.labelPosList.append(labelPos)
-                self.uvPlaceList.append(sorted_keys[0])
+                k = sorted_keys[0]
+                wPos = [k[1]/100, k[0]/100, k[2]/100]
+                uvPos = self.w2uv(wPos)
+                self.labelPosList.append(wPos)
+                self.uvPlaceList.append(uvPos)
+            
+            print(wPos, uvPos)
 
         return (self.labelPosList, self.uvPlaceList)
 
 
     # Checks if a given space is occupied (1 if occupied, 0 if else)
-    def check_occupancyMap(self, center, panel_w, panel_h):
-        min_x = int(center[1]-panel_w/2)
-        min_y = int(center[0]-panel_h/2)
-        max_x = int(center[1]+panel_w/2)
-        max_y = int(center[0]+panel_h/2)
-        
+    def check_occupancyMap(self, pos, panel_dim):
+        min_x = int(pos[1]-panel_dim[1]/2)
+        min_y = int(pos[0]-panel_dim[0]/2)
+        max_x = int(pos[1]+panel_dim[1]/2)
+        max_y = int(pos[0]+panel_dim[0]/2)
+   
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
-                if self.occupancyMap[(y, x)] == 1:
-                    return 1
+                if (y, x) in self.occupancyMap.keys():
+                    if self.occupancyMap[(y, x)] == 1:
+                            return 1
         return 0
 
 
     # Sets a given space as occupied (1 if occupied, 0 if else)
-    def set_occupancyMap(self, center, panel_w, panel_y):
-        min_x = int(center[1]-panel_w/2)
-        min_y = int(center[0]-panel_y/2)
-        max_x = int(center[1]+panel_w/2)
-        max_y = int(center[0]+panel_y/2)
-
+    def set_occupancyMap(self, pos, panel_dim):
+        min_x = int(pos[1]-panel_dim[1]/2)
+        min_y = int(pos[0]-panel_dim[0]/2)
+        max_x = int(pos[1]+panel_dim[1]/2)
+        max_y = int(pos[0]+panel_dim[0]/2)
+        
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
-                self.occupancyMap[(y, x)] = 1
+                 self.occupancyMap[(y, x)] = 1
 
 
     def color(self, uvPosList):
@@ -225,6 +166,7 @@ class Adapt:
             textColors.append(text)
 
         return (labelColors, textColors)
+
 
     def _color(self, uvPos, i):
         crop_rect = (   uvPos[0] - self.panelDim[i][1]/2,
@@ -275,6 +217,7 @@ class Adapt:
 
         return (labelColor, textColor)
 
+
     def dominantColor(self, imgPatch):
         domColor = np.array([255, 0, 0])
 
@@ -302,6 +245,7 @@ class Adapt:
 
         return domColor
 
+
     def colorHarmony(self, RGB, angle_size):
         ret = []
 
@@ -322,6 +266,7 @@ class Adapt:
             ret.append(RGB_ret)
 
         return ret
+
 
     def panelColorDistribution(self, patchColor):
         rgb = np.divide(np.copy(patchColor).reshape((1,1,3)), 255.0)
@@ -363,6 +308,7 @@ class Adapt:
 
         return binRow
 
+
     def panelLightnessDistribution(self, patchColor):
         binLogProbs = [[-1.7198, -2.0075, -1.8068, -1.9534, -1.8068, -2.5953, -2.5953, -2.7006],
                         [-1.6405, -2.1001, -1.8769, -2.4449, -1.5645, -2.2336, -2.8802, -2.6391],
@@ -380,6 +326,7 @@ class Adapt:
 
         return binRow
 
+
     def fittsLaw(self, anchor, pos, label):
         width = label[1]
         a = 0.4926
@@ -389,17 +336,20 @@ class Adapt:
         T = a + b*ID
         return T
 
+
     def anchorPos(self):
         return self.wPos
         
     def anchorCentre(self):
         return self.w2uv(self.wPos)
         
+
     def setMetaData(self, img_meta):
         metaSplit = img_meta.split(';')
         self.wPos = self.strArr2numArr(metaSplit[0])
         self.mCam = self.strArr2mat(metaSplit[1])        
         self.mProj = self.strArr2mat(metaSplit[2])
+
     
     def msgString(self, placePos, labelColor, textColor):
         sComma = ","
@@ -412,6 +362,7 @@ class Adapt:
         #placePosStr = np.array2string(patchLogProb, formatter={'float_kind':lambda placePos: "%.3f," % placePos})
         msg = "%s;%s;%s" % (placePosStr, labelColorStr, textColorStr)
         return msg
+
 
     def w2uv(self, wPos):
         mCamInv = np.linalg.inv(self.mCam)
@@ -426,6 +377,7 @@ class Adapt:
         v = self.halfImgDim[0] - self.halfImgDim[0] * iPos[1]
         pos = np.array([u, v])
         return pos
+
         
     def uv2w(self, uv):
         xImg = (uv[0] - self.halfImgDim[1]) / self.halfImgDim[1]
@@ -439,6 +391,7 @@ class Adapt:
         wPos = np.matmul(self.mCam, cPosTemp)
         
         return wPos[0:3]
+
 
     # Compute label dimensions in uv coord
     def wDim2uvDim(self, labelDim):
@@ -463,6 +416,7 @@ class Adapt:
 
         return dim
     
+
     def strArr2numArr(self, strArr):
         cols = strArr.split(',')
         l = len(cols)
@@ -473,11 +427,13 @@ class Adapt:
             iC += 1
         return arr
         
+
     def strArr2mat(self, strArr):
         arr = self.strArr2numArr(strArr)
         m =  arr.reshape(4,4)
         return m
     
+
     def colourfulness(self, img):
         R = np.array(img.getdata(0))
         G = np.array(img.getdata(1))
@@ -489,12 +445,14 @@ class Adapt:
         M = sig_rgyb + 0.3 * mu_rgyb
         return M
 
+
     def colourfulnessLogProb(self, M):
         binEdges = np.array([0,15,33,45,59,82,109,200])
         binLogProbs = np.array([-0.4899,-1.2813,-2.7429,-3.5005,-4.5038,-5.5154,-99.9])
         iBin = np.argmax(binEdges>M)-1
         return binLogProbs[iBin]
         
+
     def edgeness(self, img):
         imgBW = img.convert('L')
         imgCV = np.array(imgBW)
@@ -506,11 +464,13 @@ class Adapt:
         F = nEdgePxls / nEl * 100
         return F
         
+
     def edgenessLogProb(self, F):
         binEdges = np.array([0,10,20,30,40,50,60,70,80,90,100])
         binLogProbs = np.array([-0.3841,-2.2289,-2.7121,-3.1175,-3.4052,-4.0685,-3.7237,-4.1291,-4.8223,-6.2086])
         iBin = np.argmax(binEdges>F)-1
         return binLogProbs[iBin]
+
                     
     def offsetLogProb(self, normalized_offset):
         xBinEdges = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4])
@@ -532,52 +492,156 @@ class Adapt:
 
         return logProb
 
+
     def perceivedBrightness(self, color):
         # From: https://www.w3.org/TR/AERT/
         #((Red value X 299) + (Green value X 587) + (Blue value X 114)) / 1000
         b = (color[0] * 299 + color[1] * 587 + color[2] * 114) / 1000
         return b
+        
 
+    def get_pose(self, voxel):
+        arm_poses = self.compute_anchor_arm_poses(voxel)
+        if (arm_poses == []):
+            return arm_poses
 
-def test():
-    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
-    f = open(directory + "context_img_buff_1623145003.log", "r")
-    byte_arr = bytes(f.read(), 'utf-8')
-    out_file = directory + '\\out\\' + 'out.png'
-    img_path = directory + "context_img_1623145003.png"
-    img = cv2.imread(img_path)
+        arm_poses = arm_poses[0]
+        pose = [0, voxel[0], voxel[1], voxel[2], arm_poses['elbow_x'], arm_poses['elbow_y'], 
+             arm_poses['elbow_z'], arm_poses['elv_angle'], arm_poses['shoulder_elv'], arm_poses['elbow_flexion']]
+        
+        return pose
 
-    img_dim = [504, 896]
-    panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
-    occlusion = False
-    color_harmony = False
-    num_panels = 4
-    color_harmony_template = 93.6
-    colorfulness = 0.33
-    edgeness = 0.33
-    fitts_law = 0.33
-
-    a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
-    (labelPos, uvPlace) = a.weighted_optimization()
-    (labelColor, textColor) = a.color(uvPlace)
-    print(labelPos)
-
-    if color_harmony == True:
-        colors =  a.colorHarmony(labelColor[0], color_harmony_template)
-    else:
-        colors = labelColor
-
-    for i in range(num_panels):
-        min_y = int(uvPlace[i][0] - a.panelDim[i][0]/2)
-        max_y = int(uvPlace[i][0] + a.panelDim[i][0]/2)
-        min_x = int(uvPlace[i][1] - a.panelDim[i][1]/2)
-        max_x = int(uvPlace[i][1] + a.panelDim[i][1]/2)
-        cv2.rectangle(img, (min_x, min_y), (max_x, max_y), colors[i], -1)
     
-    cv2.imwrite(out_file, img)
+    def compute_anchor_arm_poses(self, end_effector, rotation_step=-math.pi / 8, limit=-math.pi * 3 / 4):
+        arm_poses = []
+        u, v, c, r = armpos.compute_elbow_plane(end_effector, self.arm_proper_length, self.forearm_hand_length)
+
+        # If result is None, pose is not possible with current constraints
+        if u is None:
+            return arm_poses
+
+        # rotate from 0 to 135 degrees
+        elbow_positions = []
+        theta = 0
+
+        while theta > limit:
+            elbow_positions.append(r * (math.cos(theta) * u + math.sin(theta) * v) + c)
+            theta += rotation_step
+
+        for elbow_pos in elbow_positions:
+            elv_angle = math.atan2(elbow_pos[0], elbow_pos[2])
+            if math.degrees(elv_angle) > 130:
+                continue
+
+            # both values are normalized
+            if not math.isclose(math.cos(elv_angle), 0, abs_tol=1e-5):
+                s2 = elbow_pos[2] / (math.cos(elv_angle) * self.arm_proper_length)
+            else:
+                s2 = elbow_pos[0] / (math.sin(elv_angle) * self.arm_proper_length)
+
+            shoulder_elv = math.atan2(s2, -elbow_pos[1] / self.arm_proper_length)
+            elbow_flexion = linalg.law_of_cosines_angle(self.arm_proper_length, self.forearm_hand_length,
+                                                                linalg.magnitude(end_effector), radians=False)
+            elbow_flexion_osim = 180 - elbow_flexion
+
+            humerus_transform = np.linalg.inv(armpos.compute_base_shoulder_rot(elv_angle, shoulder_elv))
+            forearm_vector = end_effector - elbow_pos
+            point = humerus_transform @ np.array([forearm_vector[0], forearm_vector[1], forearm_vector[2], 1])
+            shoulder_rot = -math.degrees(math.atan2(point[2], point[0]))
+
+            arm_poses.append({'elbow_x': elbow_pos[0], 'elbow_y': elbow_pos[1], 'elbow_z': elbow_pos[2],
+                            'elv_angle': math.degrees(elv_angle), 'shoulder_elv': math.degrees(shoulder_elv),
+                            'shoulder_rot': shoulder_rot, 'elbow_flexion': elbow_flexion_osim})
+
+        return arm_poses
 
 
-def main():
+    def consumed_endurance(self, pose):
+        # Frievalds arm data for 50th percentile male:
+        # upper arm: length - 33cm; mass - 2.1; distance cg - 13.2
+        # forearm: length - 26.9cm; mass - 1.2; distance cg - 11.7
+        # hand: length - 19.1cm; mass - 0.4; distance cg - 7.0
+
+        # retrieve pose data and convert to meters
+        end_effector = np.array(pose[1:4]) / 100
+        elbow = np.array(pose[4:7]) / 100
+
+        # ehv stands for elbow hand vector
+        ehv_unit = linalg.normalize(end_effector - elbow)
+        elbow_unit = linalg.normalize(elbow)
+        
+        # Due to the fact that we lock the hand coordinate (always at 0 degrees), the CoM of the elbow - hand vector
+        # will always be at 17.25cm from the elbow for 50th percent male
+        # 11.7 + 0.25 * 22.2 = 17.25
+        # 17.25 / 46 = 0.375
+        # check appendix B of Consumed Endurance paper for more info
+        d = elbow + ehv_unit * self.forearm_hand_length * 0.01 * 0.375
+        a = elbow_unit * self.arm_proper_length * 0.01 * 0.4
+        ad = d - a
+        com = a + 0.43 * ad
+
+        # mass should be adjusted if arm dimensions change
+        # 3.7kg for 50th percentile male, currently a simple heuristic based on arm size.
+        adjusted_mass = (self.forearm_hand_length + self.arm_proper_length) / 79 * 3.7
+        torque_shoulder = np.cross(com, adjusted_mass * np.array([0, 9.8, 0]))
+        torque_shoulder_mag = linalg.magnitude(torque_shoulder)
+
+        strength = torque_shoulder_mag / 101.6 * 100
+        return strength
+
+
+    def rula(self, pose):
+        # arm pose is already computed for osim
+        end_effector = pose[1:4]
+        elv_angle = pose[7]
+        shoulder_elv = pose[8]
+        elbow_flexion = pose[9]
+        rula_score = 0
+
+        # upper arm flexion / extension
+        if shoulder_elv < 20:
+            rula_score += 1
+        elif shoulder_elv < 45:
+            rula_score += 2
+        elif shoulder_elv < 90:
+            rula_score += 3
+        else:
+            rula_score += 4
+
+        # add 1 if upper arm is abducted
+        # we consider arm abducted if elv_angle is < 45 and > -45, and shoulder_elv > 30
+        if -60 > elv_angle < 60 and shoulder_elv > 30:
+            rula_score += 1
+
+        # lower arm flexion
+        if 60 < elbow_flexion < 100:
+            rula_score += 1
+        else:
+            rula_score += 2
+
+        # if lower arm is working across midline or out to the side add 1
+        # according to MoBL model, shoulder is 17cm from thorax on z axis (osim coord system), we use that value:
+        if end_effector[2] + 17 < 0 or end_effector[2] > 0:
+            rula_score += 1
+
+        # wrist is always 1, due to fixed neutral position
+        rula_score += 1
+
+        return rula_score
+
+
+    def muscle_activation_reserve_function(self, pose):
+        # we want to give priority to poses with the lowest reserve values. Hence, we use the max reserve value of all
+        # voxels, where their reserve value is the minimum between all the poses.
+        # voxels that have reserve values among a threshold receive the worst comfort rating (1).
+       
+        reserve_threshold = 250
+        muscle_activation_reserve = pose[1] + pose[2] / reserve_threshold
+        return muscle_activation_reserve
+    
+
+
+def test_file():
     directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
     f = open(directory + "context_img_buff_1623145003.log", "r")
     byte_arr = bytes(f.read(), 'utf-8')
@@ -589,16 +653,21 @@ def main():
     occlusion = True
     num_panels = 4
     color_harmony_template = 93.6
+
     colorfulness = 0.33
     edgeness = 0.33
     fitts_law = 0.33
+    ce = 0.0
+    muscle_act = 0.0
+    rula = 0.0
 
     with open(out_file, "w") as f:
-        a = Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
+        opt = UIOptimizer(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
+                          colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
         
-        (labelPos, uvPlaces) = a.place()
-        (labelColors, textColors) = a.color(uvPlaces)
-        colors = a.colorHarmony(labelColors[0], color_harmony_template)
+        (labelPos, uvPlaces) = opt.place()
+        (labelColors, textColors) = opt.color(uvPlaces)
+        colors = opt.colorHarmony(labelColors[0], color_harmony_template)
    
         for i in range(num_panels):
             dim_str = str(panel_dim[i][0]) + ',' + str(panel_dim[i][1])
@@ -610,5 +679,49 @@ def main():
             print(line)
             f.write(line)
 
+
+def main():
+    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
+    f = open(directory + "context_img_buff_1623145003.log", "r")
+    byte_arr = bytes(f.read(), 'utf-8')
+    out_file = directory + '\\out\\' + 'out.png'
+    img_path = directory + "context_img_1623145003.png"
+    img = cv2.imread(img_path)
+
+    img_dim = [504, 896]
+    panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
+    occlusion = False
+    color_harmony = True
+    num_panels = 4
+    color_harmony_template = 93.6
+
+    colorfulness = 0.0
+    edgeness = 0.0
+    fitts_law = 0.0
+    ce = 0.33
+    muscle_act = 0.33
+    rula = 0.33
+
+    opt = UIOptimizer(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
+                      colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
+
+    (labelPos, uvPlace) = opt.weighted_optimization()
+    (labelColor, textColor) = opt.color(uvPlace)
+
+    if color_harmony == True:
+        colors =  opt.colorHarmony(labelColor[0], color_harmony_template)
+    else:
+        colors = labelColor
+
+    for i in range(num_panels):
+        min_y = int(uvPlace[i][0] - opt.panelDim[i][0]/2)
+        max_y = int(uvPlace[i][0] + opt.panelDim[i][0]/2)
+        min_x = int(uvPlace[i][1] - opt.panelDim[i][1]/2)
+        max_x = int(uvPlace[i][1] + opt.panelDim[i][1]/2)
+        cv2.rectangle(img, (min_x, min_y), (max_x, max_y), colors[i], -1)
+    
+    cv2.imwrite(out_file, img)
+
+
 if __name__ == "__main__":
-    test()
+    main()

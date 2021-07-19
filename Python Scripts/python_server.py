@@ -1,6 +1,6 @@
 import zmq
 import json
-import adapt
+import UIoptimizer
 import numpy as np
 
 
@@ -20,17 +20,22 @@ def get_panel_info(request):
     colorfulness = request["colorfulness"]
     edgeness = request["edgeness"]
     fitts_law = request["fittsLaw"]
+    ce = request["ce"]
+    muscle_act = request["muscleActivation"]
+    rula = request["rula"]
+
 
     for c in constraints:
         panel_dim.append((c["height"], c["width"]))
 
-    a = adapt.Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, colorfulness, edgeness, fitts_law)
+    opt = UIoptimizer.Adapt(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion,
+                            colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
         
-    (labelPos, uvPlaces) = a.weighted_optimization()
-    (labelColors, textColors) = a.color(uvPlaces)
+    (labelPos, uvPlaces) = opt.weighted_optimization()
+    (labelColors, textColors) = opt.color(uvPlaces)
 
     if color_harmony == True:
-        colors =  a.colorHarmony(labelColors[0], color_harmony_template)
+        colors =  opt.colorHarmony(labelColors[0], color_harmony_template)
     else:
         colors = labelColors
    

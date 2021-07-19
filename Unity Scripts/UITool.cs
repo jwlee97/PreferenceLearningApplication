@@ -19,9 +19,12 @@ public class UITool : MonoBehaviour {
     public Slider colorfulnessSlider;
     public Slider edgenessSlider;
     public Slider fittsLawSlider;
+    public Slider ceSlider;
+    public Slider muscleActivationSlider;
+    public Slider rulaSlider;
     public Slider cognitiveLoadSlider;
-    public bool enableOcclusion;
-    public bool enableColorHarmony;
+    public Toggle enableOcclusion;
+    public Toggle enableColorHarmony;
     public float[,] panelSizes;
     public PanelConstraints[] constraints;
 
@@ -64,14 +67,6 @@ public class UITool : MonoBehaviour {
         officeScene.SetActive(false);
     }
 
-    public void EnableOcclusion() {
-        enableOcclusion = true;
-    }
-
-    public void EnableColorHarmony() {
-        enableColorHarmony = true;
-    }
-
     public void CreateUI() {
         StartCoroutine(CreateRequest());
         int i = 0;
@@ -95,7 +90,9 @@ public class UITool : MonoBehaviour {
     }
    
     private IEnumerator CreateRequest() {
-        var request = new Serialization.ComputePositionRequest(numPanels, constraints, enableOcclusion, enableColorHarmony, colorfulnessSlider.value, edgenessSlider.value, fittsLawSlider.value);
+        var request = new Serialization.ComputePositionRequest(numPanels, constraints, enableOcclusion.isOn, enableColorHarmony.isOn,
+                                                               colorfulnessSlider.value, edgenessSlider.value, fittsLawSlider.value,
+                                                               ceSlider.value, muscleActivationSlider.value, rulaSlider.value);
         var requestJson = JsonUtility.ToJson(request);
         _pythonNetworking.PerformRequest("C", requestJson);
         yield return new WaitUntil(() => _pythonNetworking.requestResult != null);

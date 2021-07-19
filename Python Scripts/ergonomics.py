@@ -5,12 +5,10 @@ import arm_position_helpers as armpos
 
 
 class Ergonomics:
-    def __init__(self, arm_proper_length=33, forearm_hand_length=46, spacing=10):
+    def __init__(self, arm_proper_length=33, forearm_hand_length=46):
         self.forearm_hand_length = forearm_hand_length
         self.arm_proper_length = arm_proper_length
         self.arm_total_length = arm_proper_length + forearm_hand_length
-        self.spacing = spacing
-
 
     def get_pose(self, voxel):
         arm_poses = self.compute_anchor_arm_poses(voxel)[0]

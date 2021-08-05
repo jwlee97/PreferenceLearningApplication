@@ -23,14 +23,17 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
     """
     def __init__(self, ui, img_path, X, M, GP_params={}):
         super().__init__(**GP_params)
-        self.X = X
+        self.X_arr = X
         self.M = M
         self.ui = ui
         self.img = plt.imread(img_path, 0)
 
 
-    def get_coords_from_figure(self, imgP, imgS):
+    def plot_figures(self, iter, imgP, imgS):
         fig, ax = plt.subplots(1, 2)
+        title = "Iteration " + str(iter+1)
+        fig.suptitle(title, fontsize=16)
+
         ax[0].imshow(imgP)
         ax[0].set_title("Preference")
         ax[1].imshow(imgS)
@@ -41,7 +44,7 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         axQuit = plt.axes([0.6, 0.05, 0.2, 0.075])
         bP = Button(axP, 'Preference')
         bS = Button(axS, 'Suggestion')
-        bQuit = Button(axQuit, 'Next Panel')
+        bQuit = Button(axQuit, 'Quit')
 
         def on_click_p(event):
             global letter
@@ -59,7 +62,7 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
             global letter
             plt.close()
             letter = 'Q'
-            return letter 
+            return letter
 
         bP.on_clicked(on_click_p)
         bS.on_clicked(on_click_s)
@@ -67,41 +70,29 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         plt.show()
 
 
-    def get_img(self, i, w_coords, img):
+    def get_img(self, i, w_coords, img, colors):
         img_copy = img.copy()
         w_coords = [w_coords[0]/100, w_coords[1]/100, w_coords[2]/100]
         uv_coords = self.ui.w2uv(w_coords)
-        if i == 0:
-            labelColor, _ = self.ui._color(uv_coords, i)
-            self.colorHarmony = self.ui.colorHarmony(labelColor, 93.6)
         
+        if i == 0 or len(colors) == 0:
+            labelColor, _ = self.ui._color(uv_coords, i)
+            ret_colors = self.ui.colorHarmony(labelColor, 93.6)
+
+        if len(colors) > 0:
+            ret_colors = colors
+
         min_x = int(uv_coords[0]-self.ui.panelDim[i][1]/2)
         max_x = int(uv_coords[0]+self.ui.panelDim[i][1]/2)
         min_y = int(uv_coords[1]-self.ui.panelDim[i][0]/2)
         max_y = int(uv_coords[1]+self.ui.panelDim[i][0]/2)
-        cv2.rectangle(img_copy, (min_x, min_y), (max_x, max_y), self.colorHarmony[i], -1)
+            
+        cv2.rectangle(img_copy, (min_x, min_y), (max_x, max_y), ret_colors[i], -1)
 
-        return img_copy
+        return img_copy, ret_colors
 
-    
+
     def interactive_optimization(self, bounds, method="L-BFGS-B",
-                                 n_init=1, n_solve=1, f_prior=None,
-                                 max_iter=1e4, print_suggestion=True):
-        
-        optimal_value_list = []
-        for i in range(self.ui.num_panels):
-            optimal_values, suggestion, X, M, f_posterior, img = self._interactive_optimization(i, bounds, method, 
-                                                            n_init, n_solve, f_prior, max_iter, print_suggestion)
-            optimal_value_list.append(optimal_values)
-            if i == 0:
-                ret_img = img
-            else:
-                ret_img = self.get_img(i, optimal_values, ret_img)
-        
-        return optimal_value_list, ret_img
-
-
-    def _interactive_optimization(self, iter, bounds, method="L-BFGS-B",
                                  n_init=1, n_solve=1, f_prior=None,
                                  max_iter=1e4, print_suggestion=True):
         """Bayesian optimization via preferences inputs.
@@ -187,64 +178,96 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         if not print_suggestion and max_iter > 1:
             raise ValueError('When print_suggestion is set to False, '
                              'max_iter must be set to 1.')
-        X, M = check_x_m(self.X, self.M)
-        features = list(bounds.keys())
+        
+        features_arr = []
+        X_arr = []
+        f_prior_arr = []
+        df_arr = [None] * self.ui.num_panels
+        ret_colors = []
+
+        for i in range(self.ui.num_panels):
+            X, M = check_x_m(self.X_arr[i], self.M)
+            X_arr.append(X)
+            features = list(bounds.keys())
+            features_arr.append(features)
+            f_prior_arr.append(f_prior)
+        
         M_ind_cpt = M.shape[0] - 1
+
         pd.set_option('display.max_columns', None)
         iteration = 0
+
         while iteration < max_iter:
-            self.fit(X, M, f_prior)
-            x_optim = self.bayesopt(bounds, method, n_init, n_solve)
-            f_optim = self.predict(x_optim)
-            f_prior = np.concatenate((self.posterior, f_optim))
-            X = np.concatenate((X, x_optim))
-            # current preference index in X.
-            M_ind_current = M[M.shape[0] - 1][0]
-            # suggestion index in X.
-            M_ind_proposal = M_ind_cpt + 2
-            # current preference vs suggestion.
-
-            #if iteration == 0:
-            #   labelPos, uvPlace = self.ui.weighted_optimization()
-            #   X[[M_ind_current]] = [labelPos[0][0]*100, labelPos[0][1]*100, labelPos[0][2]*100]
-
-            df = pd.DataFrame(data=np.concatenate((X[[M_ind_current]],
-                                                   X[[M_ind_proposal]])),
-                              columns=features,
-                              index=['preference', 'suggestion'])
-            if print_suggestion:
-                print(df)
-                input_msg = "Iteration %d, preference (p) or suggestion (s)? " \
-                            "(Q to quit): " % M_ind_cpt
+            for i in range(self.ui.num_panels):
+                self.fit(X_arr[i], M, f_prior_arr[i])
+                x_optim = self.bayesopt(bounds, method, n_init, n_solve)
+                f_optim = self.predict(x_optim)
+                f_prior_arr[i] = np.concatenate((self.posterior, f_optim))
+                X_arr[i] = np.concatenate((X_arr[i], x_optim))
                 
-                imgP = self.get_img(iter, X[[M_ind_current][0]], self.img)
-                imgS = self.get_img(iter, X[[M_ind_proposal][0]], self.img)
+                # current preference index in X.
+                M_ind_current = M[M.shape[0] - 1][0]
+                
+                # suggestion index in X.
+                M_ind_proposal = M_ind_cpt + 2
+
+                #if iteration == 0:
+                #   labelPos, uvPlace = self.ui.weighted_optimization()
+                #   X[[M_ind_current]] = [labelPos[0][0]*100, labelPos[0][1]*100, labelPos[0][2]*100]
+
+                df = pd.DataFrame(data=np.concatenate((X_arr[i][[M_ind_current]],
+                                                    X_arr[i][[M_ind_proposal]])),
+                                  columns=features,
+                                  index=['preference', 'suggestion'])
+                
+                df_arr[i] = df
+            
+            if print_suggestion:
+                imgP = self.img.copy()
+                imgS = self.img.copy()
+
+                for i, df in enumerate(df_arr):
+                    imgP, colorP = self.get_img(i, df.loc['preference'].values, imgP, ret_colors)
+                    imgS, colorS = self.get_img(i, df.loc['suggestion'].values, imgS, [])
+            
                 ret_img = imgP
-                self.get_coords_from_figure(imgP, imgS)
+                self.plot_figures(iteration, imgP, imgS)
                 preference_input = letter
 
-                print(preference_input)
+                print("User chooses: ", preference_input)
+
                 if preference_input == 'Q':
                     break
                 # left index is preferred over right index as a convention.
                 elif preference_input == 'p':
                     new_pair = np.array([M_ind_current, M_ind_proposal])
                     ret_img = imgP
+                    ret_colors = colorP
                 elif preference_input == 's':
                     new_pair = np.array([M_ind_proposal, M_ind_current])
                     ret_img = imgS
+                    ret_colors = colorS
                 else:
                     break
+                
                 M = np.vstack((M, new_pair))
                 M_ind_cpt += 1
                 iteration += 1
             else:
                 break
+
         pd.set_option('display.max_columns', 0)
-        optimal_values = df.loc['preference'].values
-        suggestion = df.loc['suggestion'].values
-        f_posterior = f_prior
-        return optimal_values, suggestion, X, M, f_posterior, ret_img
+        optimal_values = []
+        suggestion = []
+
+        for i, df in enumerate(df_arr):
+            optimal_values.append(df.loc['preference'].values)
+            suggestion.append(df.loc['suggestion'].values)
+        
+        f_posterior = f_prior_arr
+
+        return optimal_values, suggestion, X_arr, M, f_posterior, ret_img
+
 
     def function_optimization(self, f, bounds, max_iter=1,
                               method="L-BFGS-B", n_init=100, n_solve=1,

@@ -31,9 +31,14 @@ def main():
 
     ### Preference learning w/ Bayesian Optimization ###
     # 3D example. Initialization.
-    X = np.random.sample(size=(2, 3)) * 10
-    M = np.array([0, 1]).reshape(-1, 2)
+    X_arr = []
 
+    for i in range(ui.num_panels):
+        X = np.random.sample(size=(2, 3)) * 10
+        X_arr.append(X)
+
+    M = np.array([0, 1]).reshape(-1, 2)
+   
     GP_params = {'kernel': Matern(length_scale=1, nu=2.5),
                 'post_approx': Laplace(s_eval=1e-5, max_iter=1000,
                                         eta=0.01, tol=1e-3),
@@ -41,14 +46,13 @@ def main():
                 'alpha': 1e-5,
                 'random_state': None}
 
-    gpr_opt = ProbitBayesianOptimization(ui, img_path, X, M, GP_params)
+    gpr_opt = ProbitBayesianOptimization(ui, img_path, X_arr, M, GP_params)
     bounds = {'x0': (ui.xl[0], ui.xu[0]), 'x1': (ui.xl[1], ui.xu[1]), 'x2': (ui.xl[2], ui.xu[2])}
-    print('Bounds: ', bounds)
 
-    opt_vals, ret_img = gpr_opt.interactive_optimization(bounds=bounds, n_init=100, n_solve=10)
+    optimal_values, suggestion, X_arr, M_arr, f_posterior, ret_img = gpr_opt.interactive_optimization(bounds=bounds, n_init=100, n_solve=10)
     #optimal_values, suggestion, X_post, M_post, f_post = console_opt
     print('--- Optimal values: ---')
-    for val in opt_vals: 
+    for val in optimal_values: 
         print(val)
     
     ret_img = cv2.cvtColor(ret_img, cv2.COLOR_BGR2RGB)

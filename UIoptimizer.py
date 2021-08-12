@@ -1,5 +1,6 @@
 import base64
 import io
+import os
 import math
 import numpy as np
 import random
@@ -55,7 +56,11 @@ class UIOptimizer:
         self.labelPosList = []
         self.uvPlaceList = []
         self.panelDim = []
-        self.voxels = []
+
+        self.voxels = armpos.compute_interaction_space(spacing,
+                                                       [(-15, self.arm_total_length), (-self.arm_total_length, self.arm_total_length),
+                                                       (-self.arm_proper_length / 2 - forearm_hand_length, self.arm_total_length)],
+                                                        self.arm_total_length)
 
         for i in range(self.num_panels):
             self.panelDim.append(self.wDim2uvDim(np.array(panelDim[i]))) # panel dimensions in uv space
@@ -65,30 +70,24 @@ class UIOptimizer:
                 for x in range(imgDim[1]):
                     self.occupancyMap[(y, x)] = 0
 
-        
-        voxels = armpos.compute_interaction_space(spacing,
-                                                [(-15, self.arm_total_length), (-self.arm_total_length, self.arm_total_length),
-                                                 (-self.arm_proper_length / 2 - forearm_hand_length, self.arm_total_length)],
-                                                   self.arm_total_length)
-
-
-        x_l = voxels[0][0]
-        y_l = voxels[0][1]
-        z_l = voxels[0][2]
-        x_u = voxels[0][0]
-        y_u = voxels[0][1]
-        z_u = voxels[0][2]
+        x_l = self.voxels[0][0]
+        y_l = self.voxels[0][1]
+        z_l = self.voxels[0][2]
+        x_u = self.voxels[0][0]
+        y_u = self.voxels[0][1]
+        z_u = self.voxels[0][2]
 
         for i in range(self.num_panels):
-            for v in voxels:
-                uv = self.w2uv([v[0]/100, v[1]/100, v[2]/100])
+            for v in self.voxels:
+                wPos = [v[0]/100, v[1]/100, v[2]/100]
+                uv = self.w2uv(wPos)
                 min_x = int(uv[0]-self.panelDim[i][1]/2)
                 min_y = int(uv[1]-self.panelDim[i][0]/2)
                 max_x = int(uv[0]+self.panelDim[i][1]/2)
                 max_y = int(uv[1]+self.panelDim[i][0]/2)
 
                 if min_x >= 0 and min_y >= 0 and max_x < self.imgDim[1] and max_y < self.imgDim[0]:
-                    self.voxels.append(v)
+                    #self.voxels.append(v)
                     if v[0] < x_l: x_l = v[0]
                     if v[1] < y_l: y_l = v[1]
                     if v[2] < z_l: z_l = v[2]
@@ -98,7 +97,7 @@ class UIOptimizer:
 
         self.xl = np.array([x_l, y_l, z_l]) # lower limits in cm
         self.xu = np.array([x_u, y_u, z_u]) # upper limits in cm
-        
+
 
     def weighted_optimization(self):
         for i in range(self.num_panels):
@@ -106,7 +105,8 @@ class UIOptimizer:
             panelWeightedSum = {}
 
             for v in self.voxels:
-                uv = self.w2uv([v[2]/100, v[0]/100, v[1]/100])
+                wPos = [v[0]/100, v[1]/100, v[2]/100]
+                uv = self.w2uv(wPos)
                 min_x = int(uv[0]-panel_dim[1]/2)
                 min_y = int(uv[1]-panel_dim[0]/2)
                 max_x = int(uv[0]+panel_dim[1]/2)
@@ -147,19 +147,21 @@ class UIOptimizer:
         
             if (self.occlusion == False):
                 for k in sorted_keys:
-                    uvPos = self.w2uv([k[2]/100, k[0]/100, k[1]/100])
+                    wPos = [k[0]/100, k[1]/100, k[2]/100]
+                    uvPos = self.w2uv(wPos)
                     if self.check_occupancyMap(uvPos, panel_dim) == 0:
                         self.set_occupancyMap(uvPos, panel_dim)
-                        wPos = [k[2]/100, k[0]/100, k[1]/100]
                         self.labelPosList.append(wPos)
                         self.uvPlaceList.append(uvPos)
                         break
             else:
                 k = sorted_keys[0]
-                wPos = [k[2]/100, k[0]/100, k[1]/100]
+                wPos = [k[0]/100, k[1]/100, k[2]/100]
                 uvPos = self.w2uv(wPos)
                 self.labelPosList.append(wPos)
                 self.uvPlaceList.append(uvPos)
+            
+            print("World: ", wPos, ", Pixel: ", uvPos)
 
         return (self.labelPosList, self.uvPlaceList)
 
@@ -677,10 +679,10 @@ class UIOptimizer:
 
 
 def test_file():
-    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
-    f = open(directory + "context_img_buff_1623145003.log", "r")
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    f = open(dir_path + "\\context_img_buff_1623145003.log", "r")
     byte_arr = bytes(f.read(), 'utf-8')
-    out_file = directory + 'out.txt'
+    out_file = dir_path + '\\out\\' + 'out.txt'
     print('Saving info to %s' % out_file)
 
     img_dim = [504, 896]
@@ -689,9 +691,9 @@ def test_file():
     num_panels = 4
     color_harmony_template = 93.6
 
-    colorfulness = 0.33
-    edgeness = 0.33
-    fitts_law = 0.33
+    colorfulness = 0.6
+    edgeness = 0.2
+    fitts_law = 0.2
     ce = 0.0
     muscle_act = 0.0
     rula = 0.0
@@ -711,16 +713,15 @@ def test_file():
             text_color_str = str(textColors[i][0]) + ',' + str(textColors[i][1]) + ',' + str(textColors[i][2])
 
             line =  dim_str + ';' + pos_str + ';' + color_str + ';' + text_color_str + '\n'
-            print(line)
             f.write(line)
 
 
 def main():
-    directory = "C:\\Users\\2020\\UNITY\\HololensComms\\Assets\\Images\\"
-    f = open(directory + "context_img_buff_1623145003.log", "r")
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    f = open(dir_path + "\\context_img_buff_1623145003.log", "r")
     byte_arr = bytes(f.read(), 'utf-8')
-    out_file = directory + '\\out\\' + 'out.png'
-    img_path = directory + "context_img_1623145003.png"
+    out_file = dir_path + '\\out\\' + 'out.png'
+    img_path = "context_img_1623145003.png"
     img = cv2.imread(img_path)
 
     img_dim = [504, 896]
@@ -753,7 +754,8 @@ def main():
         max_x = int(uvPlace[i][0] + opt.panelDim[i][1]/2)
         min_y = int(uvPlace[i][1] - opt.panelDim[i][0]/2)
         max_y = int(uvPlace[i][1] + opt.panelDim[i][0]/2)
-        cv2.rectangle(img, (min_x, min_y), (max_x, max_y), colors[i], -1)
+        BGR = (colors[i][2], colors[i][1], colors[i][1])
+        cv2.rectangle(img, (min_x, min_y), (max_x, max_y), BGR, -1)
     
     cv2.imwrite(out_file, img)
 

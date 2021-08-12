@@ -30,7 +30,7 @@ def main():
                       colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
 
     ### Preference learning w/ Bayesian Optimization ###
-    # 3D example. Initialization.
+    ### 3D example
     X_arr = []
 
     for i in range(ui.num_panels):
@@ -46,7 +46,6 @@ def main():
                 'alpha': 1e-5,
                 'random_state': None}
 
-    gallery_size = 4
     gpr_opt = ProbitBayesianOptimization(ui, img_path, X_arr, M, GP_params)
     bounds = {'x0': (ui.xl[0], ui.xu[0]), 'x1': (ui.xl[1], ui.xu[1]), 'x2': (ui.xl[2], ui.xu[2])}
 

@@ -37,9 +37,18 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         ax[1].imshow(imgS)
         ax[1].set_title("Suggestion")
 
-        axP = plt.axes([0.2, 0.05, 0.2, 0.075])
-        axS = plt.axes([0.4, 0.05, 0.2, 0.075])
-        axQuit = plt.axes([0.6, 0.05, 0.2, 0.075])
+        text_str = """In test.py, change the image file, panel sizes, and objective function weights in 
+                    main() to adjust the UI layout. At each iteration, choose the preferred UI layout - 
+                    this will become the ‘preference’ image for the next iteration, and the application, 
+                    will suggest a new layout as the ‘suggestion’. When finished, press ‘quit’. The script, 
+                    will display the optimized UI layout when finished, and output the optimal locations of 
+                    each panel in world coordinates."""
+
+        plt.figtext(0.1, 0.75, text_str, wrap=True, horizontalalignment='left', fontsize=8)
+
+        axP = plt.axes([0.2, 0.15, 0.2, 0.075])
+        axS = plt.axes([0.4, 0.15, 0.2, 0.075])
+        axQuit = plt.axes([0.6, 0.15, 0.2, 0.075])
         bP = Button(axP, 'Preference')
         bS = Button(axS, 'Suggestion')
         bQuit = Button(axQuit, 'Quit')
@@ -177,24 +186,32 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         pd.set_option('display.max_columns', None)
         iteration = 0
 
+        print("--- Iteration 1 ---")
+        print("Preference shows optimal layout from weighted sum optimization.")
+
+        initLabelPos, _ = self.ui.weighted_optimization()
+
         while iteration < max_iter:
+            if (iteration > 0):
+                print("--- Iteration " + str(iteration+1) + " ---")
             for i in range(self.ui.num_panels):
                 self.fit(X_arr[i], M, f_prior_arr[i])
                 x_optim = self.bayesopt(bounds, method, n_init, n_solve)
                 f_optim = self.predict(x_optim)
                 f_prior_arr[i] = np.concatenate((self.posterior, f_optim))
+
+                # X_arr holds preference and suggestion panel locations for each panel (in world coords)
                 X_arr[i] = np.concatenate((X_arr[i], x_optim))
                 
-                # current preference index in X.
+                # current preference index in X
                 M_ind_current = M[M.shape[0] - 1][0]
                 
-                # suggestion index in X.
+                # suggestion index in X
                 M_ind_proposal = M_ind_cpt + 2
-
-                #if iteration == 0:
-                #   labelPos, uvPlace = self.ui.weighted_optimization()
-                #   X[[M_ind_current]] = [labelPos[0][0]*100, labelPos[0][1]*100, labelPos[0][2]*100]
-
+                
+                if iteration == 0:
+                    X_arr[i][[M_ind_current]] = [initLabelPos[i][0]*100, initLabelPos[i][1]*100, initLabelPos[i][2]*100]
+                
                 df = pd.DataFrame(data=np.concatenate((X_arr[i][[M_ind_current]],
                                                     X_arr[i][[M_ind_proposal]])),
                                   columns=features,
@@ -237,8 +254,11 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         suggestion = []
 
         for i, df in enumerate(df_arr):
-            optimal_values.append(df.loc['preference'].values)
-            suggestion.append(df.loc['suggestion'].values)
+            # Convert panel coords from cm to m
+            p_val = df.loc['preference'].values/100
+            s_val = df.loc['suggestion'].values/100
+            optimal_values.append(p_val)
+            suggestion.append(s_val)
         
         f_posterior = f_prior_arr
 

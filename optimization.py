@@ -37,12 +37,9 @@ class ProbitBayesianOptimization(ProbitPreferenceGP):
         ax[1].imshow(imgS)
         ax[1].set_title("Suggestion")
 
-        text_str = """In test.py, change the image file, panel sizes, and objective function weights in 
-                    main() to adjust the UI layout. At each iteration, choose the preferred UI layout - 
-                    this will become the ‘preference’ image for the next iteration, and the application, 
-                    will suggest a new layout as the ‘suggestion’. When finished, press ‘quit’. The script, 
-                    will display the optimized UI layout when finished, and output the optimal locations of 
-                    each panel in world coordinates."""
+        text_str = """At each iteration, choose the preferred UI layout - this will become the ‘preference’ 
+                    image for the next iteration, and the application will suggest a new layout as the 
+                    ‘suggestion’. When finished, press ‘quit’. """
 
         plt.figtext(0.1, 0.75, text_str, wrap=True, horizontalalignment='left', fontsize=8)
 

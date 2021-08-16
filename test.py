@@ -10,9 +10,15 @@ from optimization import ProbitBayesianOptimization
 
 def main():
     dir_path = os.path.dirname(os.path.realpath(__file__))
-    f = open(dir_path + "\\context_img_buff_1623145003.log", "r")
+    img_buffer_file = dir_path + "\\input_images\\context_img_buff_1629133512.log"
+    img_meta_file = dir_path + "\\input_images\\context_img_1629133512.log"
+    img_file = dir_path + "\\input_images\\context_img_1629133512.png"
+    img = cv2.imread(img_file)
+    f = open(img_buffer_file, 'r')
     byte_arr = bytes(f.read(), 'utf-8')
-    img_path = "context_img_1623145003.png"
+
+    with open(img_meta_file, 'r') as f:
+        meta_data = f.read()
 
     img_dim = [504, 896]
     panel_dim = [(0.1, 0.15), (0.1, 0.1), (0.2, 0.1), (0.15, 0.1)]
@@ -26,8 +32,8 @@ def main():
     muscle_act = 0.33
     rula = 0.33
 
-    ui = UIOptimizer(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
-                      colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
+    ui = UIOptimizer(byte_arr, meta_data, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
+                     colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
 
     ### Preference learning w/ Bayesian Optimization ###
     ### 3D example
@@ -46,7 +52,7 @@ def main():
                 'alpha': 1e-5,
                 'random_state': None}
 
-    gpr_opt = ProbitBayesianOptimization(ui, img_path, X_arr, M, GP_params)
+    gpr_opt = ProbitBayesianOptimization(ui, img_file, X_arr, M, GP_params)
     bounds = {'x0': (ui.xl[0], ui.xu[0]), 'x1': (ui.xl[1], ui.xu[1]), 'x2': (ui.xl[2], ui.xu[2])}
 
     optimal_values, X_arr, M_arr, f_posterior, ret_img = gpr_opt.interactive_optimization(bounds=bounds, n_init=100, n_solve=10)

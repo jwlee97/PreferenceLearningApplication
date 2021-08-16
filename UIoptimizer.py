@@ -4,7 +4,6 @@ import os
 import math
 import numpy as np
 import random
-
 import linalg_helpers as linalg
 import arm_position_helpers as armpos
 
@@ -15,7 +14,7 @@ from PIL import Image
 
 
 class UIOptimizer:
-    def __init__(self, b64img, imgDim, panelDim, num_panels, occlusion, colorfulness, edgeness,
+    def __init__(self, b64img, meta_data, imgDim, panelDim, num_panels, occlusion, colorfulness, edgeness,
                  fitts_law, ce, muscle_act, rula, arm_proper_length=33, forearm_hand_length=46, spacing=10):
         self.imgDim = imgDim
         self.halfImgDim = imgDim / 2
@@ -33,18 +32,11 @@ class UIOptimizer:
         self.arm_proper_length = arm_proper_length
         self.arm_total_length = arm_proper_length + forearm_hand_length
 
-        # TODO: obtain mCan and mProj values from Hololens
-        self.mCam = np.array(  [[0.99693,	0.05401,	0.05667,	0.00708],
-                               [-0.07171,	0.92042,	0.38429,	0.06751],
-                               [0.03140,	0.38718,	-0.92147,	0.13505],
-                               [0.00000,	0.00000,	0.00000,	1.00000]])
-
-        self.mProj = np.array(  [[1.52314,	0.00000,	0.01697,	0.00000 ],
-                                [0.00000,	2.70702,	-0.05741,	0.00000 ],
-                                [0.00000,	0.00000,	-1.00000,	0.00000 ],
-                                [0.00000,	0.00000,	-1.00000,	0.00000]])
-
+        self.mCam = np.empty([4, 4])
+        self.mProj = np.empty([4, 4])
         self.wPos = np.array([0, 0, 0])
+        self.setMetaData(meta_data)
+
         self.depth = 0
         self.colorScheme = True
 
@@ -97,6 +89,7 @@ class UIOptimizer:
 
         self.xl = np.array([x_l, y_l, z_l]) # lower limits in cm
         self.xu = np.array([x_u, y_u, z_u]) # upper limits in cm
+    
 
 
     def weighted_optimization(self):
@@ -164,6 +157,12 @@ class UIOptimizer:
             print("World: ", wPos, ", Pixel: ", uvPos)
 
         return (self.labelPosList, self.uvPlaceList)
+
+
+    def setMetaData(self, img_meta):
+        metaSplit = img_meta.split(';')
+        self.mCam = self.strArr2mat(metaSplit[0])        
+        self.mProj = self.strArr2mat(metaSplit[1])
 
 
     # Checks if a given space is occupied (1 if occupied, 0 if else)
@@ -379,26 +378,6 @@ class UIOptimizer:
         
     def anchorCentre(self):
         return self.w2uv(self.wPos)
-        
-
-    def setMetaData(self, img_meta):
-        metaSplit = img_meta.split(';')
-        self.wPos = self.strArr2numArr(metaSplit[0])
-        self.mCam = self.strArr2mat(metaSplit[1])        
-        self.mProj = self.strArr2mat(metaSplit[2])
-
-    
-    def msgString(self, placePos, labelColor, textColor):
-        sComma = ","
-        placePosStr = ["%.4f" % x for x in placePos]
-        placePosStr = sComma.join(placePosStr)
-        labelColorStr = ["%.1f" % x for x in labelColor]
-        labelColorStr = sComma.join(labelColorStr)
-        textColorStr = ["%d" % x for x in textColor]
-        textColorStr = sComma.join(textColorStr)
-        #placePosStr = np.array2string(patchLogProb, formatter={'float_kind':lambda placePos: "%.3f," % placePos})
-        msg = "%s;%s;%s" % (placePosStr, labelColorStr, textColorStr)
-        return msg
 
 
     def w2uv(self, wPos):
@@ -680,10 +659,15 @@ class UIOptimizer:
 
 def test_file():
     dir_path = os.path.dirname(os.path.realpath(__file__))
-    f = open(dir_path + "\\context_img_buff_1623145003.log", "r")
+    img_buffer_file = dir_path + "\\input_images\\context_img_buff_1629133512.log"
+    img_meta_file = dir_path + "\\input_images\\context_img_1629133512.log"
+    f = open(img_buffer_file, 'r')
     byte_arr = bytes(f.read(), 'utf-8')
-    out_file = dir_path + '\\out\\' + 'out.txt'
+    out_file = dir_path + '\\output_images\\' + 'out.txt'
     print('Saving info to %s' % out_file)
+
+    with open(img_meta_file, "r") as f:
+        meta_data = f.read()
 
     img_dim = [504, 896]
     panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
@@ -699,7 +683,7 @@ def test_file():
     rula = 0.0
 
     with open(out_file, "w") as f:
-        opt = UIOptimizer(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
+        opt = UIOptimizer(byte_arr, meta_data, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
                           colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
         
         (labelPos, uvPlaces) = opt.place()
@@ -718,14 +702,20 @@ def test_file():
 
 def main():
     dir_path = os.path.dirname(os.path.realpath(__file__))
-    f = open(dir_path + "\\context_img_buff_1623145003.log", "r")
+    img_buffer_file = dir_path + "\\input_images\\context_img_buff_1629133512.log"
+    img_meta_file = dir_path + "\\input_images\\context_img_1629133512.log"
+    img_file = dir_path + "\\input_images\\context_img_1629133512.png"
+    img = cv2.imread(img_file)
+    f = open(img_buffer_file, 'r')
     byte_arr = bytes(f.read(), 'utf-8')
-    out_file = dir_path + '\\out\\' + 'out.png'
-    img_path = "context_img_1623145003.png"
-    img = cv2.imread(img_path)
+    out_file = dir_path + '\\output_images\\' + 'out.png'
+    print('Saving info to %s' % out_file)
+
+    with open(img_meta_file, 'r') as f:
+        meta_data = f.read()
 
     img_dim = [504, 896]
-    panel_dim = [(0.1, 0.15), (0.05, 0.1), (0.2, 0.1), (0.1, 0.2)]
+    panel_dim = [(0.1, 0.15), (0.1, 0.1), (0.2, 0.1), (0.15, 0.1)]
     occlusion = False
     color_harmony = True
     num_panels = 4
@@ -733,12 +723,12 @@ def main():
 
     colorfulness = 0.0
     edgeness = 0.0
-    fitts_law = 0.0
-    ce = 0.33
+    fitts_law = 0.33
+    ce = 0.0
     muscle_act = 0.33
     rula = 0.33
 
-    opt = UIOptimizer(byte_arr, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
+    opt = UIOptimizer(byte_arr, meta_data, np.array(img_dim), np.array(panel_dim), num_panels, occlusion, 
                       colorfulness, edgeness, fitts_law, ce, muscle_act, rula)
 
     (labelPos, uvPlace) = opt.weighted_optimization()
